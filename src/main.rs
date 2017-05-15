@@ -1,36 +1,44 @@
+extern crate futures;
 extern crate native_tls;
-use native_tls::TlsConnector;
+extern crate tokio_core;
+extern crate tokio_io;
+extern crate tokio_tls;
+
 use std::env;
-use std::io::{Read, Write};
-use std::net::TcpStream;
-use std::thread;
-use std::time::Duration;
+use std::io;
+use std::net::ToSocketAddrs;
+
+use futures::Future;
+use native_tls::TlsConnector;
+use tokio_core::net::TcpStream;
+use tokio_core::reactor::Core;
+use tokio_tls::TlsConnectorExt;
 
 fn main() {
     let host = env::var("HOST").unwrap();
     let port = "443";
 
-    let connector = TlsConnector::builder().unwrap().build().unwrap();
+    let mut core = Core::new().unwrap();
+    let handle = core.handle();
+    let addr = format!("{}:{}", &host, port).to_socket_addrs().unwrap().next().unwrap();
 
-    let stream = TcpStream::connect(format!("{}:{}", host, port)).unwrap();
-    let mut stream = connector.connect(&host, stream).unwrap();
+    let cx = TlsConnector::builder().unwrap().build().unwrap();
+    let socket = TcpStream::connect(&addr, &handle);
 
-    let mut written = String::new();
-    let start = "GET /";
-    written.push_str(&start);
-    stream.write(start.as_bytes());
+    let tls_handshake = socket.and_then(|socket| {
+        let tls = cx.connect_async(&host, socket);
+        tls.map_err(|e| {
+            io::Error::new(io::ErrorKind::Other, e)
+        })
+    });
+    let request_body = format!("GET /api/v3/server_info HTTP/1.0\r\nHost: {}\r\n\r\n", host);
+    let request = tls_handshake.and_then(|socket| {
+        tokio_io::io::write_all(socket, request_body.as_bytes())
+    });
+    let response = request.and_then(|(socket, _request)| {
+        tokio_io::io::read_to_end(socket, Vec::new())
+    });
 
-    loop {
-        thread::sleep(Duration::from_secs(30));
-        let symbol = "a";
-        written.push_str(&symbol);
-        stream.write(symbol.as_bytes());
-        stream.flush();
-        println!("Written: {}", written);
-    }
-
-    //stream.write_all(format!("GET /api/v3/server_info HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nAccept-Encoding: identity\r\n\r\n", host).as_bytes()).unwrap();
-    //let mut res = vec![];
-    //stream.read_to_end(&mut res).unwrap();
-    //println!("{}", String::from_utf8_lossy(&res));
+    let (_socket, data) = core.run(response).unwrap();
+    println!("{}", String::from_utf8_lossy(&data));
 }
