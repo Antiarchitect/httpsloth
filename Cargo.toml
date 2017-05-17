@@ -5,3 +5,7 @@ authors = ["Andrey Voronkov <voronkovaa@gmail.com>"]
 
 [dependencies]
 native-tls = "0.1"
+futures = "0.1"
+
+tokio-core = "0.1"
+tokio-timer = "0.1"
