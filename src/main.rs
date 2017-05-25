@@ -25,7 +25,7 @@ fn main() {
     let port = "443";
 
     let timeout = 50;
-    let connections_count = 500;
+    let connections_count = 2048;
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();
@@ -48,6 +48,7 @@ fn main() {
         });
 
         let outer_handle = handle.clone();
+        let outer_connection_number = connection_number.clone();
         let connection = handshake.and_then(move |mut socket| {
             let _start_written = socket.write(start.as_bytes());
             let _start_flushed = socket.flush();
@@ -63,7 +64,7 @@ fn main() {
             println!("Stream number: {} spawned.", connection_number);
             Ok(())
         });
-        outer_handle.spawn(connection.map_err(|e| panic!("{}", e)));
+        outer_handle.spawn(connection.map_err(move |e| println!("Connection: {} failed! Reason: {}", outer_connection_number, e)));
     }
 
     let empty: futures::Empty<(), ()> = future::empty();
