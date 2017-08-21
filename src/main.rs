@@ -20,17 +20,22 @@ use tokio_tls::TlsConnectorExt;
 use tokio_timer::*;
 
 fn main() {
-    let host = env::var("HOST").unwrap();
-    let path = env::var("POSTPATH").unwrap();
-    let port = "443";
+    let host = env::var("HOST").expect("Provide HOST environment variable.");
+    let path = env::var("URL_PATH").expect("Provide URL_PATH environment variable.");
+    let default_port: Result<String, &str> = Ok("443".to_owned());
+    let port = env::var("PORT").or(default_port).unwrap();
+    let default_content_length: Result<String, &str> = Ok("10000000".to_owned());
+    let content_length = env::var("CONTENT_LENGTH").or(default_content_length).unwrap();
 
-    let timeout = 50;
-    let connections_count = 2048;
+    let default_timeout: Result<String, &str> = Ok("50".to_owned());
+    let timeout: u64 = env::var("TIMEOUT_SEC").or(default_timeout).unwrap().parse().unwrap();
+    let default_connections_count: Result<String, &str> = Ok("2048".to_owned());
+    let connections_count: usize = env::var("CONNECTIONS_COUNT").or(default_connections_count).unwrap().parse().unwrap();
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();
 
-    let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: 10000000\r\n\r\n", path, host);
+    let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, host, content_length);
     let timer = Timer::default();
     let addr = format!("{}:{}", host, port).to_socket_addrs().unwrap().next().unwrap();
 
