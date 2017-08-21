@@ -4,6 +4,7 @@ version = "0.1.1"
 authors = ["Andrey Voronkov <voronkovaa@gmail.com>"]
 
 [dependencies]
+url = "1.5"
 native-tls = "0.1"
 
 futures = "0.1"

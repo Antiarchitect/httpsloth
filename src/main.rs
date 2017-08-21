@@ -1,29 +1,36 @@
-extern crate futures;
-extern crate native_tls;
-
-extern crate tokio_core;
-extern crate tokio_timer;
-extern crate tokio_tls;
-
-use native_tls::TlsConnector;
 use std::env;
+use std::io;
 use std::io::Write;
+use std::net::ToSocketAddrs;
 use std::time::Duration;
 
-use std::io;
-use std::net::ToSocketAddrs;
-
+extern crate futures;
 use futures::*;
+
+extern crate native_tls;
+use native_tls::TlsConnector;
+
+extern crate url;
+use url::{Url, ParseError};
+
+extern crate tokio_core;
 use tokio_core::reactor::Core;
 use tokio_core::net::TcpStream;
-use tokio_tls::TlsConnectorExt;
+
+extern crate tokio_timer;
 use tokio_timer::*;
 
+extern crate tokio_tls;
+use tokio_tls::TlsConnectorExt;
+
 fn main() {
-    let host = env::var("HOST").expect("Provide HOST environment variable.");
-    let path = env::var("URL_PATH").expect("Provide URL_PATH environment variable.");
-    let default_port: Result<String, &str> = Ok("443".to_owned());
-    let port = env::var("PORT").or(default_port).unwrap();
+    let parsed_url = Url::parse(&env::var("URL").unwrap()).unwrap();
+    let needs_tls = match parsed_url.scheme() {
+        "https" => true,
+        _ => false
+    };
+    let host = parsed_url.host_str().unwrap().to_owned();
+    let path = parsed_url.query().unwrap();
     let default_content_length: Result<String, &str> = Ok("10000000".to_owned());
     let content_length = env::var("CONTENT_LENGTH").or(default_content_length).unwrap();
 
@@ -37,19 +44,18 @@ fn main() {
 
     let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, host, content_length);
     let timer = Timer::default();
-    let addr = format!("{}:{}", host, port).to_socket_addrs().unwrap().next().unwrap();
+    let addr = parsed_url.to_socket_addrs().unwrap().next().unwrap();
 
     for connection_number in 0..connections_count {
         let timer = timer.clone();
         let handle = handle.clone();
         let host = host.clone();
         let start = start.clone();
-
-        let connector = TlsConnector::builder().unwrap().build().unwrap();
+        
         let socket = TcpStream::connect(&addr, &handle);
 
         let handshake = socket.and_then(move |socket| {
-            connector.connect_async(&host, socket).map_err(|e| { io::Error::new(io::ErrorKind::Other, e) })
+            TlsConnector::builder().unwrap().build().unwrap().connect_async(&host, socket).map_err(|e| { io::Error::new(io::ErrorKind::Other, e) })
         });
 
         let outer_handle = handle.clone();
