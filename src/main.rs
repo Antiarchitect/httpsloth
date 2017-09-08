@@ -16,12 +16,18 @@ use url::{Url, ParseError};
 extern crate tokio_core;
 use tokio_core::reactor::Core;
 use tokio_core::net::TcpStream;
+use std::net::TcpStream as StdTcpStream;
+
+extern crate tokio_io;
 
 extern crate tokio_timer;
 use tokio_timer::*;
 
 extern crate tokio_tls;
 use tokio_tls::TlsConnectorExt;
+
+mod stream;
+use stream::MaybeHttpsStream;
 
 fn main() {
     let parsed_url = Url::parse(&env::var("URL").unwrap()).unwrap();
@@ -51,16 +57,21 @@ fn main() {
         let handle = handle.clone();
         let host = host.clone();
         let start = start.clone();
-        
-        let socket = TcpStream::connect(&addr, &handle);
 
-        let handshake = socket.and_then(move |socket| {
-            TlsConnector::builder().unwrap().build().unwrap().connect_async(&host, socket).map_err(|e| { io::Error::new(io::ErrorKind::Other, e) })
+        let socket = TcpStream::connect(&addr, &handle);
+        let mut connector = socket.and_then(move |socket| {
+            if needs_tls {
+                TlsConnector::builder().unwrap().build().unwrap()
+                    .connect_async(&host, socket)
+                    .map(|conn| MaybeHttpsStream::Https(conn))
+            } else {
+                socket.map(|conn| MaybeHttpsStream::Http(conn))
+            }
         });
 
         let outer_handle = handle.clone();
         let outer_connection_number = connection_number.clone();
-        let connection = handshake.and_then(move |mut socket| {
+        let connection = connector.and_then(move |mut socket| {
             let _start_written = socket.write(start.as_bytes());
             let _start_flushed = socket.flush();
 
