@@ -36,7 +36,7 @@ fn main() {
         _ => false
     };
     let host = parsed_url.host_str().unwrap().to_owned();
-    let path = parsed_url.query().unwrap();
+    let path = parsed_url.path();
     let default_content_length: Result<String, &str> = Ok("10000000".to_owned());
     let content_length = env::var("CONTENT_LENGTH").or(default_content_length).unwrap();
 
@@ -59,7 +59,7 @@ fn main() {
         let start = start.clone();
 
         let socket = TcpStream::connect(&addr, &handle);
-        let mut connector = socket.and_then(move |socket| {
+        let connector = socket.and_then(move |socket| {
             if needs_tls {
                 TlsConnector::builder().unwrap().build().unwrap()
                     .connect_async(&host, socket)
