@@ -11,12 +11,11 @@ extern crate native_tls;
 use native_tls::TlsConnector;
 
 extern crate url;
-use url::{Url, ParseError};
+use url::Url;
 
 extern crate tokio_core;
 use tokio_core::reactor::Core;
 use tokio_core::net::TcpStream;
-use std::net::TcpStream as StdTcpStream;
 
 extern crate tokio_io;
 
@@ -59,15 +58,15 @@ fn main() {
         let start = start.clone();
 
         let socket = TcpStream::connect(&addr, &handle);
-        let connector = socket.and_then(move |socket| {
-            if needs_tls {
+        let connector: Box<Future<Item=MaybeHttpsStream, Error=std::io::Error>> = if needs_tls {
+            Box::new(socket.and_then(move |socket| {
                 TlsConnector::builder().unwrap().build().unwrap()
                     .connect_async(&host, socket)
-                    .map(|conn| MaybeHttpsStream::Https(conn))
-            } else {
-                socket.map(|conn| MaybeHttpsStream::Http(conn))
-            }
-        });
+                    .map_err(|e| { io::Error::new(io::ErrorKind::Other, e) })
+            }).map(|stream| MaybeHttpsStream::Https(stream)))
+        } else {
+            Box::new(socket.and_then(move |socket| future::ok(socket) ).map(|stream| MaybeHttpsStream::Http(stream)))
+        };
 
         let outer_handle = handle.clone();
         let outer_connection_number = connection_number.clone();
