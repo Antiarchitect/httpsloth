@@ -68,24 +68,23 @@ fn main() {
             Box::new(socket.and_then(move |socket| future::ok(socket) ).map(|stream| MaybeHttpsStream::Http(stream)))
         };
 
-        let outer_handle = handle.clone();
         let outer_connection_number = connection_number.clone();
-        let connection = connector.and_then(move |mut socket| {
-            let _start_written = socket.write(start.as_bytes());
-            let _start_flushed = socket.flush();
-
-            let interval = timer.interval(Duration::from_secs(timeout)).for_each(move |_| {
-                let _byte_written = socket.write(b"a");
-                let _byte_flushed = socket.flush();
-                println!("Stream number: {} written.", connection_number);
-                Ok(())
+        let connection = connector
+            .and_then(move |mut socket| {
+                let _start_written = socket.write(start.as_bytes());
+                let _start_flushed = socket.flush();
+                println!("Stream number: {} spawned.", connection_number);
+                Ok(socket)
+            })
+            .and_then(move |mut socket|{
+                timer.interval(Duration::from_secs(timeout)).for_each(move |_| {
+                    let _byte_written = socket.write(b"a");
+                    let _byte_flushed = socket.flush();
+                    println!("Stream number: {} written.", connection_number);
+                    Ok(())
+                }).map_err(|e| { io::Error::new(io::ErrorKind::Other, e) })
             });
-            
-            handle.spawn(interval.map_err(|e| panic!("{}", e)));
-            println!("Stream number: {} spawned.", connection_number);
-            Ok(())
-        });
-        outer_handle.spawn(connection.map_err(move |e| println!("Connection: {} failed! Reason: {}", outer_connection_number, e)));
+        handle.spawn(connection.map_err(move |e| println!("Connection: {} failed! Reason: {}", outer_connection_number, e)));
     }
 
     let empty: futures::Empty<(), ()> = future::empty();
