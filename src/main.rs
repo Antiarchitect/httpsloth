@@ -28,6 +28,8 @@ use tokio_tls::TlsConnectorExt;
 mod stream;
 use stream::MaybeHttpsStream;
 
+type BoxedMaybeHttps = Box<Future<Item=MaybeHttpsStream, Error=std::io::Error>>;
+
 fn main() {
     let parsed_url = Url::parse(&env::var("URL").unwrap()).unwrap();
     let needs_tls = match parsed_url.scheme() {
@@ -36,7 +38,7 @@ fn main() {
     };
     let host = parsed_url.host_str().unwrap().to_owned();
     let path = parsed_url.path();
-    let default_content_length: Result<String, &str> = Ok("10000000".to_owned());
+    let default_content_length: Result<String, &str> = Ok("10000".to_owned());
     let content_length = env::var("CONTENT_LENGTH").or(default_content_length).unwrap();
 
     let default_timeout: Result<String, &str> = Ok("50".to_owned());
@@ -50,22 +52,24 @@ fn main() {
     let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, host, content_length);
     let timer = Timer::default();
     let addr = parsed_url.to_socket_addrs().unwrap().next().unwrap();
+    let tls_connector = TlsConnector::builder().unwrap().build().unwrap();
 
     for connection_number in 0..connections_count {
         let timer = timer.clone();
         let handle = handle.clone();
         let host = host.clone();
         let start = start.clone();
+        let tls_connector = tls_connector.clone();
 
         let socket = TcpStream::connect(&addr, &handle);
-        let connector: Box<Future<Item=MaybeHttpsStream, Error=std::io::Error>> = if needs_tls {
+        let connector: BoxedMaybeHttps = if needs_tls {
             Box::new(socket.and_then(move |socket| {
-                TlsConnector::builder().unwrap().build().unwrap()
+                tls_connector
                     .connect_async(&host, socket)
-                    .map_err(|e| { io::Error::new(io::ErrorKind::Other, e) })
+                    .map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("TLS connector error: {}", e)) })
             }).map(|stream| MaybeHttpsStream::Https(stream)))
         } else {
-            Box::new(socket.and_then(move |socket| future::ok(socket) ).map(|stream| MaybeHttpsStream::Http(stream)))
+            Box::new(socket.map(|stream| MaybeHttpsStream::Http(stream)))
         };
 
         let outer_connection_number = connection_number.clone();
@@ -82,7 +86,7 @@ fn main() {
                     let _byte_flushed = socket.flush();
                     println!("Stream number: {} written.", connection_number);
                     Ok(())
-                }).map_err(|e| { io::Error::new(io::ErrorKind::Other, e) })
+                }).map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("Timer error: {}", e)) })
             });
         handle.spawn(connection.map_err(move |e| println!("Connection: {} failed! Reason: {}", outer_connection_number, e)));
     }
