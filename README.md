@@ -7,4 +7,4 @@ Edit `/etc/security/limits.conf` and add:
 *               soft    nofile          12288
 ```
 ## Run
-    $ CONNECTIONS_COUNT=128 TIMEOUT_SEC=30 URL=https://target.example.com/any/valid/post/path cargo run
+    $ CONNECTIONS_COUNT=1200 TIMEOUT_SEC=30 URL=https://target.example.com/any/valid/post/path cargo run
