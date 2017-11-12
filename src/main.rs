@@ -56,7 +56,6 @@ fn main() {
 
     for connection_number in 0..connections_count {
         let timer = timer.clone();
-        let handle = handle.clone();
         let host = host.clone();
         let start = start.clone();
         let tls_connector = tls_connector.clone();
