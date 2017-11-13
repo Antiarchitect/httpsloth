@@ -48,13 +48,14 @@ fn main() {
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();
+    let loop_handle = handle.clone();
 
     let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, host, content_length);
     let timer = Timer::default();
     let addr = parsed_url.to_socket_addrs().unwrap().next().unwrap();
     let tls_connector = TlsConnector::builder().unwrap().build().unwrap();
 
-    for connection_number in 0..connections_count {
+    let cycle = future::loop_fn(0usize, move |connection_number| {
         let timer = timer.clone();
         let host = host.clone();
         let start = start.clone();
@@ -88,7 +89,15 @@ fn main() {
                 }).map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("Timer error: {}", e)) })
             });
         handle.spawn(connection.map_err(move |e| println!("Connection: {} failed! Reason: {}", outer_connection_number, e)));
-    }
+
+        if false { return Err("What could possibly go wrong here?") };
+        match connection_number <= connections_count {
+            true => Ok(future::Loop::Continue(connection_number + 1)),
+            false => Ok(future::Loop::Break(()))
+        }
+    });
+
+    loop_handle.spawn(cycle.map_err(move |e| println!("Cannot spawn connections cycle loop. Reason: {}", e)));
 
     let empty: futures::Empty<(), ()> = future::empty();
     let _core_started = core.run(empty);
