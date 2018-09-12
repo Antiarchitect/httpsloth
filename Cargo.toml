@@ -1,14 +1,13 @@
 [package]
 name = "httpsloth"
-version = "0.2.1"
+version = "0.3.0"
 authors = ["Andrey Voronkov <voronkovaa@gmail.com>"]
 
 [dependencies]
-url = "1.5"
-native-tls = "0.1"
-
+clap = "2"
 futures = "0.1"
+native-tls = "0.2"
 tokio-core = "0.1"
-tokio-io = "0.1"
-tokio-timer = "0.1"
-tokio-tls = "0.1"
+tokio-timer = "0.2"
+tokio-tls = "0.2"
+url = "1"

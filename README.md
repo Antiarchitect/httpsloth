@@ -1,4 +1,5 @@
 # Httpsloth
+
 ## Intro
 This tool is a proof of concept implementation of `Slow HTTP POST` denial of service attack.
 The general idea behind this technique is to open thousands of cheap TCP connections with proper HTTP POST request
@@ -17,8 +18,19 @@ Edit `/etc/security/limits.conf` and add:
 *               hard    nofile          16384
 *               soft    nofile          12288
 ```
+
 ## Run
-    $ CONNECTIONS_COUNT=1200 TIMEOUT_SEC=30 URL=https://target.example.com/any/valid/post/path cargo run
+```console
+cargo run -- --url https://target.example.com
+```
+
+or:
+
+```console
+cargo build --release
+./target/release/httpsloth --url https://target.example.com
+```
+
 
 ## Countermeasures
 Proper web server configuration.
