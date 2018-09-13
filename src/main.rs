@@ -28,7 +28,7 @@ use url::Url;
 mod stream;
 use stream::MaybeHttpsStream;
 
-type BoxedMaybeHttps = Box<Future<Item=MaybeHttpsStream, Error=std::io::Error>>;
+type BoxedMaybeHttps = Box<Future<Item=MaybeHttpsStream, Error=io::Error>>;
 
 fn main() {
     let arguments = App::new("HTTP Sloth")
@@ -104,7 +104,6 @@ fn main() {
             });
         handle.spawn(connection.map_err(move |e| println!("Connection: {} failed! Reason: {}", connection_number, e)));
 
-        if false { return Err("What could possibly go wrong here?") };
         if connection_number <= connections_count {
             Ok(future::Loop::Continue(connection_number + 1))
         } else {
@@ -112,7 +111,7 @@ fn main() {
         }
     });
 
-    loop_handle.spawn(cycle.map_err(move |e| println!("Cannot spawn connections cycle loop. Reason: {}", e)));
+    loop_handle.spawn(cycle.map_err(move |e: io::Error| println!("Cannot spawn connections cycle loop. Reason: {}", e)));
 
     let empty: futures::Empty<(), ()> = future::empty();
     let _core_started = core.run(empty);
