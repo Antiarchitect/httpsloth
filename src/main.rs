@@ -1,6 +1,8 @@
 use std::io;
 use std::io::Write;
 use std::net::ToSocketAddrs;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 
 #[macro_use]
@@ -28,7 +30,7 @@ use url::Url;
 mod stream;
 use stream::MaybeHttpsStream;
 
-type BoxedMaybeHttps = Box<Future<Item=MaybeHttpsStream, Error=io::Error>>;
+type BoxedMaybeHttps = Box<Future<Item = MaybeHttpsStream, Error = io::Error>>;
 
 fn main() {
     let arguments = App::new("HTTP Sloth")
@@ -70,6 +72,8 @@ fn main() {
     let addr = parsed_url.to_socket_addrs().unwrap().next().unwrap();
     let tls_connector = native_tls::TlsConnector::builder().build().unwrap();
 
+    let live_connections = Rc::new(RefCell::new(0usize));
+    let track_live_connections = live_connections.clone();
     let cycle = future::loop_fn(0usize, move |connection_number| {
         let host = host.clone();
         let start = start.clone();
@@ -102,9 +106,14 @@ fn main() {
                     Ok(())
                 }).map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("Timer error: {}", e)) })
             });
-        handle.spawn(connection.map_err(move |e| println!("Connection: {} failed! Reason: {}", connection_number, e)));
+        let live_connections = live_connections.clone();
+        *live_connections.borrow_mut() += 1;
+        handle.spawn(connection.map_err(move |e| {
+            *live_connections.borrow_mut() -= 1;
+            println!("Connection: {} failed! Reason: {}", connection_number, e);
+        }));
 
-        if connection_number <= connections_count {
+        if connection_number < connections_count {
             Ok(future::Loop::Continue(connection_number + 1))
         } else {
             Ok(future::Loop::Break(()))
@@ -112,7 +121,14 @@ fn main() {
     });
 
     loop_handle.spawn(cycle.map_err(move |e: io::Error| println!("Cannot spawn connections cycle loop. Reason: {}", e)));
-
+    let print_interval = Duration::from_secs(5);
+    loop_handle.spawn(
+        Interval::new_interval(print_interval).for_each(move |_| {
+            println!("Live Connections: {}", track_live_connections.borrow());
+            Ok(())
+        })
+        .map_err(move |e| println!("Cannot spawn live connetions print task. Reason: {}", e))
+    );
     let empty: futures::Empty<(), ()> = future::empty();
     let _core_started = core.run(empty);
 }

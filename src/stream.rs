@@ -3,7 +3,6 @@ use std::io::{self, Read, Write};
 use super::tokio_tls::TlsStream;
 use super::tokio_core::net::TcpStream;
 
-
 pub enum MaybeHttpsStream {
     Http(TcpStream),
     Https(TlsStream<TcpStream>),
