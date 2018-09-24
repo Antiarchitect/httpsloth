@@ -70,7 +70,9 @@ fn main() {
 
     let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, host, content_length);
     let addr = parsed_url.to_socket_addrs().unwrap().next().unwrap();
-    let tls_connector = native_tls::TlsConnector::builder().build().unwrap();
+    let mut tls_connector = native_tls::TlsConnector::builder();
+    tls_connector.danger_accept_invalid_certs(true);
+    let tls_connector = tls_connector.build().unwrap();
 
     let live_connections = Rc::new(RefCell::new(0usize));
     let track_live_connections = live_connections.clone();
