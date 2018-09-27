@@ -66,8 +66,6 @@ fn main() {
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();
-    let loop_handle = handle.clone();
-
     let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, host, content_length);
     let addr = parsed_url.to_socket_addrs().unwrap().next().unwrap();
     let mut tls_connector = native_tls::TlsConnector::builder();
@@ -75,57 +73,63 @@ fn main() {
     let tls_connector = tls_connector.build().unwrap();
 
     let live_connections = Rc::new(RefCell::new(0usize));
-    let track_live_connections = live_connections.clone();
     let connection_number = Rc::new(RefCell::new(0usize));
-    let cycle = Interval::new_interval(Duration::from_millis(1)).for_each(move |_| {
-        if *live_connections.borrow() >= max_connections_count { return Ok(()) };
-        *connection_number.borrow_mut() += 1;
-        let connection_number = *connection_number.borrow();
-        let host = host.clone();
-        let start = start.clone();
-        let tls_connector = tls_connector.clone();
-        let tls_connector = TlsConnector::from(tls_connector);
-
-        let socket = TcpStream::connect(&addr, &handle);
-        let connector: BoxedMaybeHttps = if needs_tls {
-            Box::new(socket.and_then(move |socket| {
-                tls_connector
-                    .connect(&host, socket)
-                    .map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("TLS connector error: {}", e)) })
-            }).map(MaybeHttpsStream::Https))
-        } else {
-            Box::new(socket.map(MaybeHttpsStream::Http))
-        };
-
-        let connection = connector
-            .and_then(move |mut socket| {
-                let _start_written = socket.write(start.as_bytes());
-                let _start_flushed = socket.flush();
-                println!("Stream number: {} spawned.", connection_number);
-                Ok(socket)
-            })
-            .and_then(move |mut socket|{
-                Interval::new_interval(interval).for_each(move |_| {
-                    let _byte_written = socket.write(b"a");
-                    let _byte_flushed = socket.flush();
-                    println!("Stream number: {} written.", connection_number);
-                    Ok(())
-                }).map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("Timer error: {}", e)) })
-            });
+    let cycle = Interval::new_interval(Duration::from_millis(1)).for_each({
         let live_connections = live_connections.clone();
-        *live_connections.borrow_mut() += 1;
-        handle.spawn(connection.map_err(move |e| {
-            *live_connections.borrow_mut() -= 1;
-            println!("Connection: {} failed! Reason: {}", connection_number, e);
-        }));
-        Ok(())
+        let connection_number = connection_number.clone();
+        let handle = handle.clone();
+        move |_| {
+            if *live_connections.borrow() >= max_connections_count { return Ok(()) };
+            *connection_number.borrow_mut() += 1;
+            let connection_number = *connection_number.borrow();
+            let host = host.clone();
+            let start = start.clone();
+            let tls_connector = tls_connector.clone();
+            let tls_connector = TlsConnector::from(tls_connector);
+
+            let socket = TcpStream::connect(&addr, &handle);
+            let connector: BoxedMaybeHttps = if needs_tls {
+                Box::new(socket.and_then(move |socket| {
+                    tls_connector
+                        .connect(&host, socket)
+                        .map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("TLS connector error: {}", e)) })
+                }).map(MaybeHttpsStream::Https))
+            } else {
+                Box::new(socket.map(MaybeHttpsStream::Http))
+            };
+
+            let connection = connector
+                .and_then(move |mut socket| {
+                    let _start_written = socket.write(start.as_bytes());
+                    let _start_flushed = socket.flush();
+                    println!("Stream number: {} spawned.", connection_number);
+                    Ok(socket)
+                })
+                .and_then(move |mut socket|{
+                    Interval::new_interval(interval).for_each(move |_| {
+                        let _byte_written = socket.write(b"a");
+                        let _byte_flushed = socket.flush();
+                        println!("Stream number: {} written.", connection_number);
+                        Ok(())
+                    }).map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("Timer error: {}", e)) })
+                });
+            *live_connections.borrow_mut() += 1;
+            handle.spawn(connection.map_err({
+                let live_connections = live_connections.clone();
+                move |e| {
+                    *live_connections.borrow_mut() -= 1;
+                    println!("Connection: {} failed! Reason: {}", connection_number, e);
+                }
+            }));
+            Ok(())
+        }
     });
 
-    loop_handle.spawn(cycle.map_err(move |e| println!("Cannot spawn connections cycle loop. Reason: {}", e)));
+    handle.spawn(cycle.map_err(move |e| println!("Cannot spawn connections cycle loop. Reason: {}", e)));
     let print_interval = Duration::from_secs(5);
-    loop_handle.spawn(
+    handle.spawn(
         Interval::new_interval(print_interval).for_each(move |_| {
-            println!("Live Connections: {}", track_live_connections.borrow());
+            println!("Live Connections: {}", live_connections.borrow());
             Ok(())
         })
         .map_err(move |e| println!("Cannot spawn live connetions print task. Reason: {}", e))
