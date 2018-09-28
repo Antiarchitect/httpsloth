@@ -1,7 +1,6 @@
 use std::io;
 use std::io::Write;
 use std::net::ToSocketAddrs;
-use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -16,11 +15,8 @@ use futures::*;
 extern crate native_tls;
 
 extern crate tokio;
-use tokio::prelude::*;
-
-extern crate tokio_core;
-use tokio_core::reactor::Core;
 use tokio::net::TcpStream;
+use tokio::runtime::Runtime;
 
 extern crate tokio_timer;
 use tokio_timer::*;
@@ -76,9 +72,12 @@ fn main() {
 
     let live_connections = Arc::new(AtomicUsize::new(0));
     let connection_number = AtomicUsize::new(0);
+    let mut runtime = Runtime::new().unwrap();
+    let handle = runtime.executor();
     let cycle = Interval::new_interval(Duration::from_millis(1)).for_each({
         let live_connections = Arc::clone(&live_connections);
         // let connection_number = connection_number.clone();
+        let handle = handle.clone();
         move |_| {
             if live_connections.load(Ordering::Acquire) >= max_connections_count { return Ok(()) };
             connection_number.fetch_add(1, Ordering::Acquire);
@@ -115,7 +114,7 @@ fn main() {
                     }).map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("Timer error: {}", e)) })
                 });
             live_connections.fetch_add(1, Ordering::Acquire);
-            tokio::spawn(connection.map_err({
+            handle.spawn(connection.map_err({
                 let live_connections = Arc::clone(&live_connections);
                 move |e| {
                     live_connections.fetch_sub(1, Ordering::Acquire);
@@ -124,16 +123,16 @@ fn main() {
             }));
             Ok(())
         }
-    });
+    })
+    .map_err(move |e| println!("Cannot spawn connections cycle loop. Reason: {}", e));
 
-    tokio::spawn(cycle.map_err(move |e| println!("Cannot spawn connections cycle loop. Reason: {}", e)));
-    let print_interval = Duration::from_secs(5);
-    tokio::run(
-        Interval::new_interval(print_interval).for_each({
-            move |_| {
-            println!("Live Connections: {}", live_connections.load(Ordering::Acquire));
-            Ok(())
-            }})
-        .map_err(move |e| println!("Cannot spawn live connetions print task. Reason: {}", e))
-    );
+    let live_stats = Interval::new_interval(Duration::from_secs(5)).for_each(move |_| {
+        println!("Live Connections: {}", live_connections.load(Ordering::Acquire));
+        Ok(())
+    })
+    .map_err(move |e| println!("Cannot spawn live connetions print task. Reason: {}", e));
+
+    runtime.spawn(cycle);
+    runtime.spawn(live_stats);
+    let _runtime_wait = runtime.shutdown_on_idle().wait();
 }
