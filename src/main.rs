@@ -73,11 +73,10 @@ fn main() {
     let connection_number = AtomicUsize::new(0);
     let cycle = Interval::new_interval(Duration::from_millis(1)).for_each({
         let live_connections = Arc::clone(&live_connections);
-        // let connection_number = connection_number.clone();
         move |_| {
-            if live_connections.load(Ordering::Acquire) >= max_connections_count { return Ok(()) };
-            connection_number.fetch_add(1, Ordering::Acquire);
-            let connection_number = connection_number.load(Ordering::Acquire);
+            if live_connections.load(Ordering::SeqCst) >= max_connections_count { return Ok(()) };
+            connection_number.fetch_add(1, Ordering::SeqCst);
+            let connection_number = connection_number.load(Ordering::SeqCst);
             let host = host.clone();
             let start = start.clone();
             let tls_connector = tls_connector.clone();
@@ -109,11 +108,11 @@ fn main() {
                         Ok(())
                     }).map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("Timer error: {}", e)) })
                 });
-            live_connections.fetch_add(1, Ordering::Acquire);
+            live_connections.fetch_add(1, Ordering::SeqCst);
             tokio::spawn(connection.map_err({
                 let live_connections = Arc::clone(&live_connections);
                 move |e| {
-                    live_connections.fetch_sub(1, Ordering::Acquire);
+                    live_connections.fetch_sub(1, Ordering::SeqCst);
                     println!("Connection: {} failed! Reason: {}", connection_number, e);
                 }
             }));
@@ -123,7 +122,7 @@ fn main() {
     .map_err(move |e| println!("Cannot spawn connections cycle loop. Reason: {}", e));
 
     let live_stats = Interval::new_interval(Duration::from_secs(5)).for_each(move |_| {
-        println!("Live Connections: {}", live_connections.load(Ordering::Acquire));
+        println!("Live Connections: {}", live_connections.load(Ordering::SeqCst));
         Ok(())
     })
     .map_err(move |e| println!("Cannot spawn live connetions print task. Reason: {}", e));
