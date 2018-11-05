@@ -1,4 +1,4 @@
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 
 use super::tokio_tls::TlsStream;
 use super::tokio::net::TcpStream;
@@ -10,30 +10,18 @@ pub enum MaybeHttpsStream {
 
 use MaybeHttpsStream::*;
 
-impl Read for MaybeHttpsStream {
-    #[inline]
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self {
-            Http(ref mut stream) => stream.read(buf),
-            Https(ref mut stream) => stream.read(buf),
-        }
-    }
-}
-
 impl Write for MaybeHttpsStream {
-    #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self {
             Http(ref mut s) => s.write(buf),
-            Https(ref mut s) => s.write(buf),
+            Https(ref mut s) => s.write(buf)
         }
     }
 
-    #[inline]
     fn flush(&mut self) -> io::Result<()> {
         match self {
             Http(ref mut s) => s.flush(),
-            Https(ref mut s) => s.flush(),
+            Https(ref mut s) => s.flush()
         }
     }
 }
