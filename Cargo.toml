@@ -1,6 +1,6 @@
 [package]
 name = "httpsloth"
-version = "0.8.3"
+version = "0.8.4"
 authors = ["Andrey Voronkov <voronkovaa@gmail.com>"]
 
 [dependencies]
