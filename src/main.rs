@@ -53,10 +53,7 @@ fn main() {
         .get_matches();
 
     let parsed_url = Url::parse(&arguments.value_of("url").unwrap()).unwrap();
-    let needs_tls = match parsed_url.scheme() {
-        "https" => true,
-        _ => false
-    };
+    let scheme = parsed_url.scheme().to_owned();
     let host = parsed_url.host_str().unwrap().to_owned();
     let path = parsed_url.path();
     let content_length = value_t!(arguments, "content-length", u32).unwrap_or(50_000);
@@ -83,14 +80,14 @@ fn main() {
             let tls_connector = TlsConnector::from(tls_connector);
 
             let socket = TcpStream::connect(&addr);
-            let connector: BoxedMaybeHttps = if needs_tls {
-                Box::new(socket.and_then(move |socket| {
-                    tls_connector
-                        .connect(&host, socket)
-                        .map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("TLS connector error: {}", e)) })
-                }).map(MaybeHttpsStream::Https))
-            } else {
-                Box::new(socket.map(MaybeHttpsStream::Http))
+            let connector: BoxedMaybeHttps = match scheme.as_ref() {
+                "https" => Box::new(socket.and_then(move |socket| {
+                               tls_connector
+                                   .connect(&host, socket)
+                                   .map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("TLS connector error: {}", e)) })
+                           }).map(MaybeHttpsStream::Https)),
+                "http" => Box::new(socket.map(MaybeHttpsStream::Http)),
+                _ => panic!("Parsed URL scheme is not HTTP/HTTPS: #{_}")
             };
 
             let connection = connector
