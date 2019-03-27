@@ -1,13 +1,13 @@
 use std::io;
 use std::io::Write;
 use std::net::ToSocketAddrs;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[macro_use]
 extern crate clap;
-use clap::{Arg, App};
+use clap::{App, Arg};
 
 extern crate futures;
 use futures::*;
@@ -68,61 +68,79 @@ fn main() {
 
     let live_connections = Arc::new(AtomicUsize::new(0));
     let connection_number = AtomicUsize::new(0);
-    let cycle = Interval::new_interval(Duration::from_millis(1)).for_each({
-        let live_connections = Arc::clone(&live_connections);
-        move |_| {
-            if live_connections.load(Ordering::SeqCst) >= max_connections_count { return Ok(()) };
-            connection_number.fetch_add(1, Ordering::SeqCst);
-            let connection_number = connection_number.load(Ordering::SeqCst);
-            let host = host.clone();
-            let start = start.clone();
-            let tls_connector = tls_connector.clone();
-            let tls_connector = TlsConnector::from(tls_connector);
+    let cycle = Interval::new_interval(Duration::from_millis(1))
+        .for_each({
+            let live_connections = Arc::clone(&live_connections);
+            move |_| {
+                if live_connections.load(Ordering::SeqCst) >= max_connections_count {
+                    return Ok(());
+                };
+                connection_number.fetch_add(1, Ordering::SeqCst);
+                let connection_number = connection_number.load(Ordering::SeqCst);
+                let host = host.clone();
+                let start = start.clone();
+                let tls_connector = tls_connector.clone();
+                let tls_connector = TlsConnector::from(tls_connector);
 
-            let socket = TcpStream::connect(&addr);
-            let connector: BoxedMaybeHttps = match scheme.as_ref() {
-                "https" => Box::new(socket.and_then(move |socket| {
-                               tls_connector
-                                   .connect(&host, socket)
-                                   .map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("TLS connector error: {}", e)) })
-                           }).map(MaybeHttpsStream::Https)),
-                "http" => Box::new(socket.map(MaybeHttpsStream::Http)),
-                _ => panic!("Parsed URL scheme is not HTTP/HTTPS: #{_}")
-            };
+                let socket = TcpStream::connect(&addr);
+                let connector: BoxedMaybeHttps = match scheme.as_ref() {
+                    "https" => Box::new(
+                        socket
+                            .and_then(move |socket| {
+                                tls_connector.connect(&host, socket).map_err(|e| {
+                                    io::Error::new(
+                                        io::ErrorKind::Other,
+                                        format!("TLS connector error: {}", e),
+                                    )
+                                })
+                            })
+                            .map(MaybeHttpsStream::Https),
+                    ),
+                    "http" => Box::new(socket.map(MaybeHttpsStream::Http)),
+                    _scheme => panic!("Parsed URL scheme is not HTTP/HTTPS: {}", _scheme),
+                };
 
-            let connection = connector
-                .and_then(move |mut socket| {
-                    let _start_written = socket.write(start.as_bytes());
-                    let _start_flushed = socket.flush();
-                    println!("Stream number: {} spawned.", connection_number);
-                    Ok(socket)
-                })
-                .and_then(move |mut socket|{
-                    Interval::new_interval(interval).for_each(move |_| {
-                        let _byte_written = socket.write(b"a");
-                        let _byte_flushed = socket.flush();
-                        println!("Stream number: {} written.", connection_number);
-                        Ok(())
-                    }).map_err(|e| { io::Error::new(io::ErrorKind::Other, format!("Timer error: {}", e)) })
-                });
-            live_connections.fetch_add(1, Ordering::SeqCst);
-            tokio::spawn(connection.map_err({
-                let live_connections = Arc::clone(&live_connections);
-                move |e| {
-                    live_connections.fetch_sub(1, Ordering::SeqCst);
-                    println!("Connection: {} failed! Reason: {}", connection_number, e);
-                }
-            }));
+                let connection = connector
+                    .and_then(move |mut socket| {
+                        let _start_written = socket.write(start.as_bytes());
+                        let _start_flushed = socket.flush();
+                        println!("Stream number: {} spawned.", connection_number);
+                        Ok(socket)
+                    })
+                    .and_then(move |mut socket| {
+                        Interval::new_interval(interval)
+                            .for_each(move |_| {
+                                let _byte_written = socket.write(b"a");
+                                let _byte_flushed = socket.flush();
+                                println!("Stream number: {} written.", connection_number);
+                                Ok(())
+                            })
+                            .map_err(|e| {
+                                io::Error::new(io::ErrorKind::Other, format!("Timer error: {}", e))
+                            })
+                    });
+                live_connections.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(connection.map_err({
+                    let live_connections = Arc::clone(&live_connections);
+                    move |e| {
+                        live_connections.fetch_sub(1, Ordering::SeqCst);
+                        println!("Connection: {} failed! Reason: {}", connection_number, e);
+                    }
+                }));
+                Ok(())
+            }
+        })
+        .map_err(move |e| println!("Cannot spawn connections cycle loop. Reason: {}", e));
+
+    let live_stats = Interval::new_interval(Duration::from_secs(5))
+        .for_each(move |_| {
+            println!(
+                "Live Connections: {}",
+                live_connections.load(Ordering::SeqCst)
+            );
             Ok(())
-        }
-    })
-    .map_err(move |e| println!("Cannot spawn connections cycle loop. Reason: {}", e));
-
-    let live_stats = Interval::new_interval(Duration::from_secs(5)).for_each(move |_| {
-        println!("Live Connections: {}", live_connections.load(Ordering::SeqCst));
-        Ok(())
-    })
-    .map_err(move |e| println!("Cannot spawn live connetions print task. Reason: {}", e));
+        })
+        .map_err(move |e| println!("Cannot spawn live connetions print task. Reason: {}", e));
 
     tokio::run(futures::future::lazy(|| {
         tokio::spawn(cycle);
