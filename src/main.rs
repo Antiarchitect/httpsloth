@@ -62,12 +62,36 @@ fn main() {
 
     let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, host, content_length);
     let addr = parsed_url.to_socket_addrs().unwrap().next().unwrap();
+
     let mut tls_connector = native_tls::TlsConnector::builder();
     tls_connector.danger_accept_invalid_certs(true);
-    let tls_connector = tls_connector.build().unwrap();
+    let tls_connector = TlsConnector::from(tls_connector.build().unwrap());
 
     let live_connections = Arc::new(AtomicUsize::new(0));
     let connection_number = AtomicUsize::new(0);
+
+    let connector = move |socket: tokio::net::tcp::ConnectFuture| {
+        let host = host.clone();
+        let tls_connector = tls_connector.clone();
+        let conn: BoxedMaybeHttps = match scheme.as_ref() {
+            "https" => Box::new(
+                socket
+                    .and_then(move |socket| {
+                        tls_connector.connect(&host, socket).map_err(|e| {
+                            io::Error::new(
+                                io::ErrorKind::Other,
+                                format!("TLS connector error: {}", e),
+                            )
+                        })
+                    })
+                    .map(MaybeHttpsStream::Https),
+            ),
+            "http" => Box::new(socket.map(MaybeHttpsStream::Http)),
+            _scheme => panic!("Parsed URL scheme is not HTTP/HTTPS: {}", _scheme),
+        };
+        conn
+    };
+
     let cycle = Interval::new_interval(Duration::from_millis(1))
         .for_each({
             let live_connections = Arc::clone(&live_connections);
@@ -77,30 +101,11 @@ fn main() {
                 };
                 connection_number.fetch_add(1, Ordering::SeqCst);
                 let connection_number = connection_number.load(Ordering::SeqCst);
-                let host = host.clone();
                 let start = start.clone();
-                let tls_connector = tls_connector.clone();
-                let tls_connector = TlsConnector::from(tls_connector);
 
                 let socket = TcpStream::connect(&addr);
-                let connector: BoxedMaybeHttps = match scheme.as_ref() {
-                    "https" => Box::new(
-                        socket
-                            .and_then(move |socket| {
-                                tls_connector.connect(&host, socket).map_err(|e| {
-                                    io::Error::new(
-                                        io::ErrorKind::Other,
-                                        format!("TLS connector error: {}", e),
-                                    )
-                                })
-                            })
-                            .map(MaybeHttpsStream::Https),
-                    ),
-                    "http" => Box::new(socket.map(MaybeHttpsStream::Http)),
-                    _scheme => panic!("Parsed URL scheme is not HTTP/HTTPS: {}", _scheme),
-                };
 
-                let connection = connector
+                let connection = connector(socket)
                     .and_then(move |mut socket| {
                         let _start_written = socket.write(start.as_bytes());
                         let _start_flushed = socket.flush();
