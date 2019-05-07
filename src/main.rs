@@ -70,27 +70,33 @@ fn main() {
     let live_connections = Arc::new(AtomicUsize::new(0));
     let connection_number = AtomicUsize::new(0);
 
-    let connector = move |socket: tokio::net::tcp::ConnectFuture| {
-        let host = host.clone();
-        let tls_connector = tls_connector.clone();
-        let conn: BoxedMaybeHttps = match scheme.as_ref() {
+    let connector: Box<Fn(tokio::net::tcp::ConnectFuture) -> BoxedMaybeHttps + Send> =
+        match scheme.as_ref() {
             "https" => Box::new(
-                socket
-                    .and_then(move |socket| {
-                        tls_connector.connect(&host, socket).map_err(|e| {
-                            io::Error::new(
-                                io::ErrorKind::Other,
-                                format!("TLS connector error: {}", e),
-                            )
-                        })
-                    })
-                    .map(MaybeHttpsStream::Https),
+                move |socket: tokio::net::tcp::ConnectFuture| -> BoxedMaybeHttps {
+                    let host = host.clone();
+                    let tls_connector = tls_connector.clone();
+                    Box::new(
+                        socket
+                            .and_then(move |socket| {
+                                tls_connector.connect(&host, socket).map_err(|e| {
+                                    io::Error::new(
+                                        io::ErrorKind::Other,
+                                        format!("TLS connector error: {}", e),
+                                    )
+                                })
+                            })
+                            .map(MaybeHttpsStream::Https),
+                    )
+                },
             ),
-            "http" => Box::new(socket.map(MaybeHttpsStream::Http)),
+            "http" => Box::new(
+                move |socket: tokio::net::tcp::ConnectFuture| -> BoxedMaybeHttps {
+                    Box::new(socket.map(MaybeHttpsStream::Http))
+                },
+            ),
             _scheme => panic!("Parsed URL scheme is not HTTP/HTTPS: {}", _scheme),
         };
-        conn
-    };
 
     let cycle = Interval::new_interval(Duration::from_millis(1))
         .for_each({
