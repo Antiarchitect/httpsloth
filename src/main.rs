@@ -21,15 +21,11 @@ extern crate tokio_timer;
 use tokio_timer::*;
 
 extern crate tokio_tls;
-use tokio_tls::TlsConnector;
 
 extern crate url;
 use url::Url;
 
-mod stream;
-use stream::MaybeHttpsStream;
-
-type BoxedMaybeHttps = Box<Future<Item = MaybeHttpsStream, Error = io::Error> + Send>;
+mod connector;
 
 fn main() {
     let arguments = App::new("HTTP Sloth")
@@ -63,41 +59,10 @@ fn main() {
     let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, host, content_length);
     let addr = parsed_url.to_socket_addrs().unwrap().next().unwrap();
 
-    let mut tls_connector = native_tls::TlsConnector::builder();
-    tls_connector.danger_accept_invalid_certs(true);
-    let tls_connector = TlsConnector::from(tls_connector.build().unwrap());
-
     let live_connections = Arc::new(AtomicUsize::new(0));
     let connection_number = AtomicUsize::new(0);
 
-    let connector: Box<Fn(tokio::net::tcp::ConnectFuture) -> BoxedMaybeHttps + Send> =
-        match scheme.as_ref() {
-            "https" => Box::new(
-                move |socket: tokio::net::tcp::ConnectFuture| -> BoxedMaybeHttps {
-                    let host = host.clone();
-                    let tls_connector = tls_connector.clone();
-                    Box::new(
-                        socket
-                            .and_then(move |socket| {
-                                tls_connector.connect(&host, socket).map_err(|e| {
-                                    io::Error::new(
-                                        io::ErrorKind::Other,
-                                        format!("TLS connector error: {}", e),
-                                    )
-                                })
-                            })
-                            .map(MaybeHttpsStream::Https),
-                    )
-                },
-            ),
-            "http" => Box::new(
-                move |socket: tokio::net::tcp::ConnectFuture| -> BoxedMaybeHttps {
-                    Box::new(socket.map(MaybeHttpsStream::Http))
-                },
-            ),
-            _scheme => panic!("Parsed URL scheme is not HTTP/HTTPS: {}", _scheme),
-        };
-
+    let connector = connector::construct(&scheme, host);
     let cycle = Interval::new_interval(Duration::from_millis(1))
         .for_each({
             let live_connections = Arc::clone(&live_connections);
