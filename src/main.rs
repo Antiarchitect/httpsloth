@@ -57,7 +57,15 @@ fn main() {
     let max_connections_count: usize = value_t!(arguments, "connections", usize).unwrap_or(2048);
 
     let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, host, content_length);
-    let addr = parsed_url.to_socket_addrs().unwrap().next().unwrap();
+    let addr = format!(
+        "{}:{}",
+        parsed_url.host_str().unwrap(),
+        parsed_url.port_or_known_default().unwrap().to_string()
+    )
+    .to_socket_addrs()
+    .unwrap()
+    .next()
+    .unwrap();
 
     let live_connections = Arc::new(AtomicUsize::new(0));
     let connection_number = AtomicUsize::new(0);
