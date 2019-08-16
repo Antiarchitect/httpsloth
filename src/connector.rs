@@ -1,12 +1,8 @@
 use std::io::{self, Write};
 
-use super::tokio::net::TcpStream;
-use super::tokio_tls::TlsStream;
-
-use futures::*;
-
-use tokio::net::tcp::ConnectFuture;
-use tokio_tls::TlsConnector;
+use futures::Future;
+use tokio::net::{tcp::ConnectFuture, TcpStream};
+use tokio_tls::{TlsConnector, TlsStream};
 
 pub enum MaybeHttpsStream {
     Http(TcpStream),
@@ -31,8 +27,8 @@ impl Write for MaybeHttpsStream {
     }
 }
 
-type BoxedMaybeHttps = Box<Future<Item = MaybeHttpsStream, Error = io::Error> + Send>;
-type BoxedConnector = Box<Fn(ConnectFuture) -> BoxedMaybeHttps + Send>;
+type BoxedMaybeHttps = Box<dyn Future<Item = MaybeHttpsStream, Error = io::Error> + Send>;
+type BoxedConnector = Box<dyn Fn(ConnectFuture) -> BoxedMaybeHttps + Send>;
 
 pub fn construct(scheme: &str, host: String) -> BoxedConnector {
     match scheme {

