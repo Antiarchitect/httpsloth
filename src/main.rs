@@ -12,15 +12,13 @@ use clap::{App, Arg};
 extern crate futures;
 use futures::*;
 
-extern crate native_tls;
-
 extern crate tokio;
 use tokio::net::TcpStream;
 
 extern crate tokio_timer;
 use tokio_timer::*;
 
-extern crate tokio_tls;
+extern crate tokio_rustls;
 
 extern crate url;
 use url::Url;

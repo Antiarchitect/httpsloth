@@ -6,8 +6,8 @@ authors = ["Andrey Voronkov <voronkovaa@gmail.com>"]
 [dependencies]
 clap = "2"
 futures = "0.1"
-native-tls = "0.2"
 tokio = "0.1"
 tokio-timer = "0.2"
-tokio-tls = "0.2"
+tokio-rustls = "0.10"
 url = "2"
+webpki-roots = "0"

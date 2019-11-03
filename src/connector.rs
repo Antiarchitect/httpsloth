@@ -1,8 +1,9 @@
 use std::io::{self, Write};
+use std::sync::Arc;
 
 use futures::Future;
 use tokio::net::{tcp::ConnectFuture, TcpStream};
-use tokio_tls::{TlsConnector, TlsStream};
+use tokio_rustls::{client::TlsStream, rustls::ClientConfig, webpki::DNSNameRef, TlsConnector};
 
 pub enum MaybeHttpsStream {
     Http(TcpStream),
@@ -33,9 +34,11 @@ type BoxedConnector = Box<dyn Fn(ConnectFuture) -> BoxedMaybeHttps + Send>;
 pub fn construct(scheme: &str, host: String) -> BoxedConnector {
     match scheme {
         "https" => {
-            let mut tls_connector = native_tls::TlsConnector::builder();
-            tls_connector.danger_accept_invalid_certs(true);
-            let tls_connector = TlsConnector::from(tls_connector.build().unwrap());
+            let mut config = ClientConfig::new();
+            config
+                .root_store
+                .add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
+            let tls_connector = TlsConnector::from(Arc::new(config));
 
             Box::new(move |socket: ConnectFuture| -> BoxedMaybeHttps {
                 let tls_connector = tls_connector.clone();
@@ -43,7 +46,8 @@ pub fn construct(scheme: &str, host: String) -> BoxedConnector {
                 Box::new(
                     socket
                         .and_then(move |socket| {
-                            tls_connector.connect(&host, socket).map_err(|e| {
+                            let dnsname = DNSNameRef::try_from_ascii_str(&host).unwrap();
+                            tls_connector.connect(dnsname, socket).map_err(|e| {
                                 io::Error::new(
                                     io::ErrorKind::Other,
                                     format!("TLS connector error: {}", e),
