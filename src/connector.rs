@@ -6,7 +6,7 @@ use tokio::net::{tcp::ConnectFuture, TcpStream};
 use tokio_rustls::{client::TlsStream, rustls::ClientConfig, webpki::DNSNameRef, TlsConnector};
 
 pub enum MaybeHttpsStream {
-    Http(Box<TcpStream>),
+    Http(TcpStream),
     Https(Box<TlsStream<TcpStream>>),
 }
 
@@ -59,7 +59,7 @@ pub fn construct(scheme: &str, host: String) -> BoxedConnector {
             })
         }
         "http" => Box::new(move |socket: ConnectFuture| -> BoxedMaybeHttps {
-            Box::new(socket.map(|s| MaybeHttpsStream::Http(Box::new(s))))
+            Box::new(socket.map(MaybeHttpsStream::Http))
         }),
         _scheme => panic!("Parsed URL scheme is not HTTP/HTTPS: {}", _scheme),
     }

@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "httpsloth"
-version = "0.10.5"
+version = "1.0.0"
 dependencies = [
  "clap 2.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures 0.1.29 (registry+https://github.com/rust-lang/crates.io-index)",
