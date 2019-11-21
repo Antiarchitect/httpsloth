@@ -97,7 +97,6 @@ async fn main() {
         let tls_connector = tls_connector.clone();
 
         tokio::spawn(async move {
-            let socket = TcpStream::connect(&addr);
             let dnsname = DNSNameRef::try_from_ascii_str(&host)
                 .map_err(|e| {
                     live_connections.fetch_sub(1, Ordering::SeqCst);
@@ -107,7 +106,7 @@ async fn main() {
                     );
                 })
                 .unwrap();
-            let socket = socket
+            let socket = TcpStream::connect(&addr)
                 .await
                 .map_err(|e| {
                     live_connections.fetch_sub(1, Ordering::SeqCst);
