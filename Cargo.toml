@@ -1,13 +1,12 @@
 [package]
 name = "httpsloth"
 version = "1.0.0"
+edition = "2018"
 authors = ["Andrey Voronkov <voronkovaa@gmail.com>"]
 
 [dependencies]
 clap = "2"
-futures = "0.1"
-tokio = "0.1"
-tokio-timer = "0.2"
-tokio-rustls = "0.10"
+tokio = "0.2.0-alpha.6"
+tokio-rustls = "0.12.0-alpha.8"
 url = "2"
 webpki-roots = "0"

