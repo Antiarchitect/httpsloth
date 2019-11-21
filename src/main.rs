@@ -1,6 +1,7 @@
 use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::thread::sleep;
 use std::time::Duration;
 
 #[macro_use]
@@ -47,7 +48,7 @@ async fn main() {
     let content_length = value_t!(arguments, "content-length", u32).unwrap_or(50_000);
     let tick = Duration::from_secs(value_t!(arguments, "interval", u64).unwrap_or(50));
     let max_connections_count: usize =
-        value_t!(arguments, "max-connections", usize).unwrap_or(8192);
+        value_t!(arguments, "max-connections", usize).unwrap_or(32768);
     let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, host, content_length);
     let body_portion = "a";
     let addr = format!(
@@ -67,24 +68,26 @@ async fn main() {
     let tls_connector = TlsConnector::from(Arc::new(config));
 
     let live_connections = Arc::new(AtomicUsize::new(0));
-    let mut interval = Interval::new_interval(Duration::from_secs(1));
 
     {
+        let mut interval = Interval::new_interval(Duration::from_secs(1));
         let live_connections = Arc::clone(&live_connections);
         tokio::spawn(async move {
-            interval.next().await;
-            println!(
-                "Live Connections: {}",
-                live_connections.load(Ordering::SeqCst)
-            );
+            loop {
+                interval.next().await;
+                println!(
+                    "Live Connections: {}",
+                    live_connections.load(Ordering::SeqCst)
+                );
+            }
         });
     }
 
-    let sleep = std::time::Duration::from_millis(10);
     loop {
+        sleep(Duration::from_millis(1));
         let live_connections = Arc::clone(&live_connections);
         if live_connections.load(Ordering::SeqCst) >= max_connections_count {
-            std::thread::sleep(sleep);
+            sleep(Duration::from_secs(1));
             continue;
         }
 
@@ -125,7 +128,6 @@ async fn main() {
                     );
                 })
                 .unwrap();
-
             // Write start
             AsyncWriteExt::write(&mut connector, start.as_bytes())
                 .await
