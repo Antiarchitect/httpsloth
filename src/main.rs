@@ -83,7 +83,6 @@ async fn main() -> io::Result<()> {
     }
 
     loop {
-        sleep(Duration::from_millis(1));
         let live_connections = Arc::clone(&live_connections);
         if live_connections.load(Ordering::SeqCst) >= max_connections_count {
             sleep(Duration::from_secs(1));
@@ -96,29 +95,39 @@ async fn main() -> io::Result<()> {
         let tls_connector = tls_connector.clone();
 
         tokio::spawn(async move {
-            let socket = TcpStream::connect(&addr).await.unwrap();
-            let mut connection = tls_connector
-                .connect(&host, socket)
-                .await
-                .map_err(|e| {
-                    live_connections.fetch_sub(1, Ordering::SeqCst);
-                    println!(
-                        "ERROR: Connection await: Connection number: {}: {}",
+            let socket = TcpStream::connect(&addr).await.map_err(|e| {
+                live_connections.fetch_sub(1, Ordering::SeqCst);
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!(
+                        "ERROR: TcpStream::connect: Connection number: {}: {}",
                         connection_number, e
-                    );
-                })
-                .unwrap();
+                    ),
+                )
+            })?;
+            let mut connection = tls_connector.connect(&host, socket).await.map_err(|e| {
+                live_connections.fetch_sub(1, Ordering::SeqCst);
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!(
+                        "ERROR: tokio_tls::TlsConnector.connect: Connection number: {}: {}",
+                        connection_number, e
+                    ),
+                )
+            })?;
             // Write start
             AsyncWriteExt::write_all(&mut connection, start.as_bytes())
                 .await
                 .map_err(|e| {
                     live_connections.fetch_sub(1, Ordering::SeqCst);
-                    println!(
-                        "ERROR: Start write_all await: Connection number: {}: {}",
-                        connection_number, e
-                    );
-                })
-                .unwrap();
+                    io::Error::new(
+                        io::ErrorKind::Other,
+                        format!(
+                            "ERROR: Start write_all await: Connection number: {}: {}",
+                            connection_number, e
+                        ),
+                    )
+                })?;
             let mut interval = time::interval(tick);
             tokio::spawn(async move {
                 interval.tick().await;
@@ -127,23 +136,27 @@ async fn main() -> io::Result<()> {
                     .await
                     .map_err(|e| {
                         live_connections.fetch_sub(1, Ordering::SeqCst);
-                        println!(
-                            "ERROR: Body write await: Connection number: {}: {}",
-                            connection_number, e
-                        );
-                    })
-                    .unwrap();
-                AsyncWriteExt::flush(&mut connection)
-                    .await
-                    .map_err(|e| {
-                        live_connections.fetch_sub(1, Ordering::SeqCst);
-                        println!(
+                        io::Error::new(
+                            io::ErrorKind::Other,
+                            format!(
+                                "ERROR: Body write await: Connection number: {}: {}",
+                                connection_number, e
+                            ),
+                        )
+                    })?;
+                AsyncWriteExt::flush(&mut connection).await.map_err(|e| {
+                    live_connections.fetch_sub(1, Ordering::SeqCst);
+                    io::Error::new(
+                        io::ErrorKind::Other,
+                        format!(
                             "ERROR: Body flush await: Connection number: {}: {}",
                             connection_number, e
-                        );
-                    })
-                    .unwrap();
+                        ),
+                    )
+                })?;
+                Ok::<(), io::Error>(())
             });
+            Ok::<(), io::Error>(())
         });
     }
 }

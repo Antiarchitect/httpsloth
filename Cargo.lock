@@ -140,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "httpsloth"
-version = "2.0.0-alpha.2"
+version = "2.0.0"
 dependencies = [
  "clap 2.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "native-tls 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)",
