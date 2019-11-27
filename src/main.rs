@@ -134,7 +134,7 @@ async fn main() -> io::Result<()> {
             tokio::spawn(async move {
                 interval.tick().await;
                 // Write small piece of body
-                AsyncWriteExt::write(&mut connection, body_portion.as_bytes())
+                AsyncWriteExt::write_all(&mut connection, body_portion.as_bytes())
                     .await
                     .map_err(|e| {
                         live_connections.fetch_sub(1, Ordering::SeqCst);
@@ -145,15 +145,6 @@ async fn main() -> io::Result<()> {
                         debug!("{}", message);
                         io::Error::new(io::ErrorKind::Other, message)
                     })?;
-                AsyncWriteExt::flush(&mut connection).await.map_err(|e| {
-                    live_connections.fetch_sub(1, Ordering::SeqCst);
-                    let message = format!(
-                        "ERROR: Body flush await: Connection number: {}: {}",
-                        connection_number, e
-                    );
-                    debug!("{}", message);
-                    io::Error::new(io::ErrorKind::Other, message)
-                })?;
                 Ok::<(), io::Error>(())
             });
             Ok::<(), io::Error>(())
