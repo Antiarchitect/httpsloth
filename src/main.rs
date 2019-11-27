@@ -1,3 +1,4 @@
+use std::io;
 use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -8,19 +9,20 @@ use std::time::Duration;
 extern crate clap;
 use clap::{App, Arg};
 
+extern crate native_tls;
+
 extern crate tokio;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
-use tokio::timer::Interval;
+use tokio::time;
 
-extern crate tokio_rustls;
-use tokio_rustls::{rustls::ClientConfig, webpki::DNSNameRef, TlsConnector};
+extern crate tokio_tls;
 
 extern crate url;
 use url::Url;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> io::Result<()> {
     let arguments = App::new("HTTP Sloth")
         .arg(Arg::with_name("url")
              .long("url")
@@ -61,20 +63,17 @@ async fn main() {
     .next()
     .unwrap();
 
-    let mut config = ClientConfig::new();
-    config
-        .root_store
-        .add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
-    let tls_connector = TlsConnector::from(Arc::new(config));
+    let tls_connector =
+        tokio_tls::TlsConnector::from(native_tls::TlsConnector::builder().build().unwrap());
 
     let live_connections = Arc::new(AtomicUsize::new(0));
 
     {
-        let mut interval = Interval::new_interval(Duration::from_secs(1));
+        let mut interval = time::interval(Duration::from_secs(1));
         let live_connections = Arc::clone(&live_connections);
         tokio::spawn(async move {
             loop {
-                interval.next().await;
+                interval.tick().await;
                 println!(
                     "Live Connections: {}",
                     live_connections.load(Ordering::SeqCst)
@@ -97,49 +96,53 @@ async fn main() {
         let tls_connector = tls_connector.clone();
 
         tokio::spawn(async move {
-            let dnsname = DNSNameRef::try_from_ascii_str(&host)
-                .map_err(|e| {
-                    live_connections.fetch_sub(1, Ordering::SeqCst);
-                    format!(
-                        "ERROR: DNSNameRef await: Connection number: {}: {}",
-                        connection_number, e
-                    );
-                })
-                .unwrap();
-            let socket = TcpStream::connect(&addr)
+            let socket = TcpStream::connect(&addr).await.unwrap();
+            let mut connection = tls_connector
+                .connect(&host, socket)
                 .await
                 .map_err(|e| {
                     live_connections.fetch_sub(1, Ordering::SeqCst);
-                    format!(
-                        "ERROR: Socket await: Connection number: {}: {}",
-                        connection_number, e
-                    );
-                })
-                .unwrap();
-            let mut connector = tls_connector
-                .connect(dnsname, socket)
-                .await
-                .map_err(|e| {
-                    live_connections.fetch_sub(1, Ordering::SeqCst);
-                    format!(
-                        "ERROR: Connector connect await: Connection number: {}: {}",
+                    println!(
+                        "ERROR: Connection await: Connection number: {}: {}",
                         connection_number, e
                     );
                 })
                 .unwrap();
             // Write start
-            AsyncWriteExt::write(&mut connector, start.as_bytes())
+            AsyncWriteExt::write_all(&mut connection, start.as_bytes())
                 .await
+                .map_err(|e| {
+                    live_connections.fetch_sub(1, Ordering::SeqCst);
+                    println!(
+                        "ERROR: Start write_all await: Connection number: {}: {}",
+                        connection_number, e
+                    );
+                })
                 .unwrap();
-            AsyncWriteExt::flush(&mut connector).await.unwrap();
-            let mut interval = Interval::new_interval(tick);
+            let mut interval = time::interval(tick);
             tokio::spawn(async move {
-                interval.next().await;
+                interval.tick().await;
                 // Write small piece of body
-                AsyncWriteExt::write(&mut connector, body_portion.as_bytes())
+                AsyncWriteExt::write(&mut connection, body_portion.as_bytes())
                     .await
+                    .map_err(|e| {
+                        live_connections.fetch_sub(1, Ordering::SeqCst);
+                        println!(
+                            "ERROR: Body write await: Connection number: {}: {}",
+                            connection_number, e
+                        );
+                    })
                     .unwrap();
-                AsyncWriteExt::flush(&mut connector).await.unwrap();
+                AsyncWriteExt::flush(&mut connection)
+                    .await
+                    .map_err(|e| {
+                        live_connections.fetch_sub(1, Ordering::SeqCst);
+                        println!(
+                            "ERROR: Body flush await: Connection number: {}: {}",
+                            connection_number, e
+                        );
+                    })
+                    .unwrap();
             });
         });
     }
