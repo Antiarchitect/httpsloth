@@ -9,6 +9,9 @@ use std::time::Duration;
 extern crate clap;
 use clap::{App, Arg};
 
+#[macro_use]
+extern crate log;
+
 extern crate native_tls;
 
 extern crate tokio;
@@ -23,6 +26,8 @@ use url::Url;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    env_logger::init();
+
     let arguments = App::new("HTTP Sloth")
         .arg(Arg::with_name("url")
              .long("url")
@@ -74,7 +79,7 @@ async fn main() -> io::Result<()> {
         tokio::spawn(async move {
             loop {
                 interval.tick().await;
-                println!(
+                info!(
                     "Live Connections: {}",
                     live_connections.load(Ordering::SeqCst)
                 );
@@ -97,36 +102,33 @@ async fn main() -> io::Result<()> {
         tokio::spawn(async move {
             let socket = TcpStream::connect(&addr).await.map_err(|e| {
                 live_connections.fetch_sub(1, Ordering::SeqCst);
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!(
-                        "ERROR: TcpStream::connect: Connection number: {}: {}",
-                        connection_number, e
-                    ),
-                )
+                let message = format!(
+                    "ERROR: TcpStream::connect: Connection number: {}: {}",
+                    connection_number, e
+                );
+                debug!("{}", message);
+                io::Error::new(io::ErrorKind::Other, message)
             })?;
             let mut connection = tls_connector.connect(&host, socket).await.map_err(|e| {
                 live_connections.fetch_sub(1, Ordering::SeqCst);
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!(
-                        "ERROR: tokio_tls::TlsConnector.connect: Connection number: {}: {}",
-                        connection_number, e
-                    ),
-                )
+                let message = format!(
+                    "ERROR: tokio_tls::TlsConnector.connect: Connection number: {}: {}",
+                    connection_number, e
+                );
+                debug!("{}", message);
+                io::Error::new(io::ErrorKind::Other, message)
             })?;
             // Write start
             AsyncWriteExt::write_all(&mut connection, start.as_bytes())
                 .await
                 .map_err(|e| {
                     live_connections.fetch_sub(1, Ordering::SeqCst);
-                    io::Error::new(
-                        io::ErrorKind::Other,
-                        format!(
-                            "ERROR: Start write_all await: Connection number: {}: {}",
-                            connection_number, e
-                        ),
-                    )
+                    let message = format!(
+                        "ERROR: Start write_all await: Connection number: {}: {}",
+                        connection_number, e
+                    );
+                    debug!("{}", message);
+                    io::Error::new(io::ErrorKind::Other, message)
                 })?;
             let mut interval = time::interval(tick);
             tokio::spawn(async move {
@@ -136,23 +138,21 @@ async fn main() -> io::Result<()> {
                     .await
                     .map_err(|e| {
                         live_connections.fetch_sub(1, Ordering::SeqCst);
-                        io::Error::new(
-                            io::ErrorKind::Other,
-                            format!(
-                                "ERROR: Body write await: Connection number: {}: {}",
-                                connection_number, e
-                            ),
-                        )
+                        let message = format!(
+                            "ERROR: Body write await: Connection number: {}: {}",
+                            connection_number, e
+                        );
+                        debug!("{}", message);
+                        io::Error::new(io::ErrorKind::Other, message)
                     })?;
                 AsyncWriteExt::flush(&mut connection).await.map_err(|e| {
                     live_connections.fetch_sub(1, Ordering::SeqCst);
-                    io::Error::new(
-                        io::ErrorKind::Other,
-                        format!(
-                            "ERROR: Body flush await: Connection number: {}: {}",
-                            connection_number, e
-                        ),
-                    )
+                    let message = format!(
+                        "ERROR: Body flush await: Connection number: {}: {}",
+                        connection_number, e
+                    );
+                    debug!("{}", message);
+                    io::Error::new(io::ErrorKind::Other, message)
                 })?;
                 Ok::<(), io::Error>(())
             });

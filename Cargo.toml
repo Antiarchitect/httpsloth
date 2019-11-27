@@ -1,11 +1,13 @@
 [package]
 name = "httpsloth"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2018"
 authors = ["Andrey Voronkov <voronkovaa@gmail.com>"]
 
 [dependencies]
 clap = "2"
+env_logger = "0.7"
+log = "0.4"
 native-tls = "0.2"
 tokio = { version = "0.2", features = ["full"] }
 tokio-tls = "0.3.0"
