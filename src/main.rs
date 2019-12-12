@@ -57,7 +57,6 @@ async fn main() -> io::Result<()> {
     let max_connections_count: usize =
         value_t!(arguments, "max-connections", usize).unwrap_or(32768);
     let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, host, content_length);
-    let body_portion = "a";
     let addr = format!(
         "{}:{}",
         parsed_url.host_str().unwrap(),
@@ -133,8 +132,8 @@ async fn main() -> io::Result<()> {
             let mut interval = time::interval(tick);
             tokio::spawn(async move {
                 interval.tick().await;
-                // Write small piece of body
-                AsyncWriteExt::write_all(&mut connection, body_portion.as_bytes())
+                // Write a byte into a body
+                AsyncWriteExt::write_u8(&mut connection, 1u8)
                     .await
                     .map_err(|e| {
                         live_connections.fetch_sub(1, Ordering::SeqCst);
