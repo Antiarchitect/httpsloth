@@ -108,7 +108,6 @@ async fn main() -> io::Result<()> {
                 io::Error::new(io::ErrorKind::Other, message)
             })?;
 
-            let host = host.clone();
             let dnsname = DNSNameRef::try_from_ascii_str(&host).unwrap();
             let mut connection = tls_connector.connect(dnsname, socket).await.map_err(|e| {
                 live_connections.fetch_sub(1, Ordering::SeqCst);

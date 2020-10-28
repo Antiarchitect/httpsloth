@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "httpsloth"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "clap",
  "env_logger",
