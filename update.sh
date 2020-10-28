@@ -1,16 +1,19 @@
-#!/bin/bash
+#!/bin/sh
 
-BASEDIR=$(dirname "$0")
-cd ${BASEDIR};
+cd "$(dirname "$0")" || exit 1
 
-rustup self update \
-    && rustup update stable \
-    && cargo update \
-    && cargo fmt \
-    && cargo build \
-    && cargo test \
-    && cargo install cargo-audit || true \
-    && cargo audit \
-    && cargo clippy \
-    && cargo install cargo-outdated || true \
-    && cargo outdated
+rustup self update 2>/dev/null || true \
+        && rustup update stable \
+        && rustup component add clippy \
+        && rustup component add rustfmt \
+        && cargo update \
+        && cargo fmt \
+        && cargo build \
+        && cargo test \
+        && cargo install cargo-audit \
+        && cargo audit \
+        && cargo clippy \
+        && cargo install cargo-outdated \
+        && cargo outdated \
+        && cargo install cargo-udeps \
+        && cargo +nightly udeps
