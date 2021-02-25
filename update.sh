@@ -8,11 +8,11 @@ rustup self update 2>/dev/null || true \
         && rustup component add rustfmt \
         && cargo update \
         && cargo fmt \
+        && cargo clippy \
         && cargo build \
         && cargo test \
         && cargo install cargo-audit \
         && cargo audit \
-        && cargo clippy \
         && cargo install cargo-outdated \
         && cargo outdated \
         && cargo install cargo-udeps \
