@@ -1,3 +1,4 @@
+use std::convert::TryFrom;
 use std::io;
 use std::net::ToSocketAddrs;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,7 +17,10 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::time;
 
-use tokio_rustls::{rustls::ClientConfig, webpki::DNSNameRef, TlsConnector};
+use tokio_rustls::{
+    rustls::ClientConfig, rustls::OwnedTrustAnchor, rustls::RootCertStore, rustls::ServerName,
+    TlsConnector,
+};
 
 use url::Url;
 
@@ -45,7 +49,7 @@ async fn main() -> io::Result<()> {
              .help("Higher cap for simultaneously opened connections. Should be more than server can handle (1024 NGINX default)."))
         .get_matches();
 
-    let parsed_url = Url::parse(&arguments.value_of("url").unwrap()).unwrap();
+    let parsed_url = Url::parse(arguments.value_of("url").unwrap()).unwrap();
     let host = parsed_url.host_str().unwrap().to_owned();
     let path = parsed_url.path();
     let content_length = value_t!(arguments, "content-length", u32).unwrap_or(50_000);
@@ -56,19 +60,28 @@ async fn main() -> io::Result<()> {
     let addr = format!(
         "{}:{}",
         parsed_url.host_str().unwrap(),
-        parsed_url.port_or_known_default().unwrap().to_string()
+        parsed_url.port_or_known_default().unwrap()
     )
     .to_socket_addrs()
     .unwrap()
     .next()
     .unwrap();
 
-    let mut config = ClientConfig::new();
-    config
-        .root_store
-        .add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
-    let tls_connector = TlsConnector::from(Arc::new(config));
-
+    let tls_connector: TlsConnector = {
+        let mut root_store = RootCertStore::empty();
+        root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
+            OwnedTrustAnchor::from_subject_spki_name_constraints(
+                ta.subject,
+                ta.spki,
+                ta.name_constraints,
+            )
+        }));
+        let config = ClientConfig::builder()
+            .with_safe_defaults()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        Arc::new(config).into()
+    };
     let live_connections = Arc::new(AtomicUsize::new(0));
 
     {
@@ -108,16 +121,18 @@ async fn main() -> io::Result<()> {
                 io::Error::new(io::ErrorKind::Other, message)
             })?;
 
-            let dnsname = DNSNameRef::try_from_ascii_str(&host).unwrap();
-            let mut connection = tls_connector.connect(dnsname, socket).await.map_err(|e| {
-                live_connections.fetch_sub(1, Ordering::SeqCst);
-                let message = format!(
-                    "ERROR: tokio_tls::TlsConnector.connect: Connection number: {}: {}",
-                    connection_number, e
-                );
-                debug!("{}", message);
-                io::Error::new(io::ErrorKind::Other, message)
-            })?;
+            let mut connection = tls_connector
+                .connect(ServerName::try_from(host.as_ref()).unwrap(), socket)
+                .await
+                .map_err(|e| {
+                    live_connections.fetch_sub(1, Ordering::SeqCst);
+                    let message = format!(
+                        "ERROR: tokio_tls::TlsConnector.connect: Connection number: {}: {}",
+                        connection_number, e
+                    );
+                    debug!("{}", message);
+                    io::Error::new(io::ErrorKind::Other, message)
+                })?;
             // Write start
             AsyncWriteExt::write_all(&mut connection, start.as_bytes())
                 .await
