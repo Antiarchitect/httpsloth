@@ -1,14 +1,14 @@
 [package]
 name = "httpsloth"
-version = "3.0.0"
+version = "3.0.1"
 edition = "2021"
 authors = ["Andrey Voronkov <voronkovaa@gmail.com>"]
 
 [dependencies]
-clap = "3"
+clap = "4"
 env_logger = "0"
 log = "0"
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "parking_lot", "rt-multi-thread", "time"] }
 tokio-rustls = "0"
 url = "2"
 webpki-roots = "0"
