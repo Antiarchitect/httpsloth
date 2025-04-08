@@ -1,6 +1,6 @@
 [package]
 name = "httpsloth"
-version = "3.0.3"
+version = "3.0.4"
 edition = "2021"
 authors = ["Andrey Voronkov <voronkovaa@gmail.com>"]
 
